@@ -1,8 +1,8 @@
 import { Component, inject, OnInit } from '@angular/core';
 import { Store } from '@ngrx/store';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
-import { filter } from 'rxjs';
-import { selectRootPath } from './store/layout/layout.selectors';
+import { filter, take } from 'rxjs';
+import { selectRootPath, selectPanels } from './store/layout/layout.selectors';
 import { LayoutActions } from './store/layout/layout.actions';
 import { UcActions } from './store/uc/uc.actions';
 import { FolderPickerComponent } from './components/folder-picker/folder-picker.component';
@@ -50,21 +50,32 @@ export class AppComponent implements OnInit {
   }
 
   openAddPanel(): void {
-    this.dialog.open(AddPanelDialogComponent).afterClosed().pipe(
-      filter((vt): vt is ViewType => !!vt),
-    ).subscribe(viewType => {
-      const panel: Panel = {
-        id: newId(),
-        viewType,
-        ucId: null,
-        pinned: false,
-        x: 0,
-        y: 0,
-        rows: 2,
-        cols: 3,
-      };
-      this.store.dispatch(LayoutActions.addPanel({ panel }));
-    });
+    let currentPanels: Panel[] = [];
+    this.store.select(selectPanels).pipe(take(1)).subscribe(p => (currentPanels = p));
+
+    const openViewTypes = [...new Set(currentPanels.map(p => p.viewType))];
+
+    this.dialog.open(AddPanelDialogComponent, { data: openViewTypes })
+      .afterClosed().pipe(
+        filter((result): result is ViewType[] => Array.isArray(result)),
+      ).subscribe(selected => {
+        const selectedSet = new Set<ViewType>(selected);
+        const previousSet = new Set<ViewType>(openViewTypes);
+
+        for (const vt of selectedSet) {
+          if (!previousSet.has(vt)) {
+            this.store.dispatch(LayoutActions.addPanel({
+              panel: { id: newId(), viewType: vt, ucId: null, pinned: false, x: 0, y: 0, rows: 2, cols: 3 },
+            }));
+          }
+        }
+
+        for (const panel of currentPanels) {
+          if (!selectedSet.has(panel.viewType)) {
+            this.store.dispatch(LayoutActions.removePanel({ panelId: panel.id }));
+          }
+        }
+      });
   }
 
   changeRoot(): void {

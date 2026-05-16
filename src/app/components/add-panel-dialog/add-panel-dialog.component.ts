@@ -1,5 +1,5 @@
 import { Component, inject } from '@angular/core';
-import { MatDialogModule, MatDialogRef } from '@angular/material/dialog';
+import { MatDialogModule, MatDialogRef, MAT_DIALOG_DATA } from '@angular/material/dialog';
 import { MatButtonModule } from '@angular/material/button';
 import { MatListModule } from '@angular/material/list';
 import { MatIconModule } from '@angular/material/icon';
@@ -12,9 +12,9 @@ import { ViewType, VIEW_TYPE_LABELS, VIEW_TYPE_LIST } from '../../models/panel.m
   template: `
     <h2 mat-dialog-title>Add Panel</h2>
     <mat-dialog-content>
-      <mat-selection-list [multiple]="false" (selectionChange)="select($event)">
+      <mat-selection-list [multiple]="true" (selectionChange)="onSelectionChange($event)">
         @for (vt of viewTypes; track vt) {
-          <mat-list-option [value]="vt">
+          <mat-list-option [value]="vt" [selected]="selected.has(vt)">
             {{ labels[vt] }}
           </mat-list-option>
         }
@@ -22,6 +22,7 @@ import { ViewType, VIEW_TYPE_LABELS, VIEW_TYPE_LIST } from '../../models/panel.m
     </mat-dialog-content>
     <mat-dialog-actions align="end">
       <button mat-button mat-dialog-close>Cancel</button>
+      <button mat-flat-button (click)="confirm()">OK</button>
     </mat-dialog-actions>
   `,
   styles: [`
@@ -30,11 +31,23 @@ import { ViewType, VIEW_TYPE_LABELS, VIEW_TYPE_LIST } from '../../models/panel.m
 })
 export class AddPanelDialogComponent {
   private dialogRef = inject(MatDialogRef<AddPanelDialogComponent>);
+  private data: ViewType[] = inject(MAT_DIALOG_DATA);
+
   viewTypes = VIEW_TYPE_LIST;
   labels = VIEW_TYPE_LABELS;
+  selected = new Set<ViewType>(this.data ?? []);
 
-  select(event: any): void {
-    const vt: ViewType = event.options[0].value;
-    this.dialogRef.close(vt);
+  onSelectionChange(event: any): void {
+    for (const option of event.options) {
+      if (option.selected) {
+        this.selected.add(option.value as ViewType);
+      } else {
+        this.selected.delete(option.value as ViewType);
+      }
+    }
+  }
+
+  confirm(): void {
+    this.dialogRef.close([...this.selected]);
   }
 }
