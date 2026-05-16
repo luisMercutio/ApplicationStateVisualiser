@@ -19,6 +19,7 @@ import { SelectorsViewComponent } from '../views/selectors-view/selectors-view.c
 import { TestStateComponent } from '../views/test-state/test-state.component';
 import { ContractValidationComponent } from '../views/contract-validation/contract-validation.component';
 import { MockupViewComponent } from '../views/mockup-view/mockup-view.component';
+import { TestReportComponent } from '../views/test-report/test-report.component';
 
 const FILE_MAP: Record<ViewType, ((id: string) => string) | string> = {
   'uc-tracker': 'usecases.md',
@@ -36,6 +37,8 @@ const FILE_MAP: Record<ViewType, ((id: string) => string) | string> = {
   'contract-validation': id => `${id}/contract-validation.json`,
   'mockup': '',
   'mockups-diff': id => `${id}/mockups/mockupsDiff.md`,
+  'test-report-backend': id => `${id}/test-report-backend.md`,
+  'test-report-frontend': id => `${id}/test-report-frontend.md`,
 };
 
 const DIFF_VIEWS: ViewType[] = ['class-diagram-diff', 'openapi-diff', 'frontend-state-diff', 'selectors-diff', 'test-state-diff', 'mockups-diff'];
@@ -48,7 +51,7 @@ const MERMAID_VIEWS: ViewType[] = ['class-diagram', 'frontend-state'];
     MatIconModule, MatButtonModule, MatMenuModule, MatTooltipModule,
     UcTrackerComponent, SuggestionComponent, MermaidViewComponent, DiffViewComponent,
     OpenApiViewComponent, SelectorsViewComponent, TestStateComponent,
-    ContractValidationComponent, MockupViewComponent,
+    ContractValidationComponent, MockupViewComponent, TestReportComponent,
   ],
   template: `
     <div class="panel-wrapper">
@@ -106,6 +109,8 @@ const MERMAID_VIEWS: ViewType[] = ['class-diagram', 'frontend-state'];
           @case ('test-state') { <app-test-state [filePath]="filePath()"></app-test-state> }
           @case ('contract-validation') { <app-contract-validation [filePath]="filePath()"></app-contract-validation> }
           @case ('mockup') { <app-mockup-view [ucId]="effectiveUcId()"></app-mockup-view> }
+          @case ('test-report-backend') { <app-test-report [filePath]="filePath()"></app-test-report> }
+          @case ('test-report-frontend') { <app-test-report [filePath]="filePath()"></app-test-report> }
         }
       </div>
     </div>

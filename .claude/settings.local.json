@@ -10,7 +10,9 @@
       "Bash(npm audit *)",
       "Bash(npm run *)",
       "Bash(node -e \"const m = require\\('./node_modules/angular-gridster2'\\); console.log\\(Object.keys\\(m\\)\\)\")",
-      "Bash(node -e \"const f = require\\('./node_modules/angular-gridster2/index.js'\\); console.log\\(Object.keys\\(f\\)\\)\")"
+      "Bash(node -e \"const f = require\\('./node_modules/angular-gridster2/index.js'\\); console.log\\(Object.keys\\(f\\)\\)\")",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\lenovo\\\\Documents\\\\GitHub\\\\ApplicationStateVisualiser\" -Force)",
+      "Bash(Select-Object Name, Mode)"
     ]
   }
 }

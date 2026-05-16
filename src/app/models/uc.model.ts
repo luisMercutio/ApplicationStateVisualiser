@@ -1,4 +1,12 @@
-export type UcStatus = 'Draft' | 'Approved' | 'Implemented';
+export type UcStatus =
+  | 'Draft'
+  | 'Approved'
+  | 'In Development'
+  | 'Testing'
+  | 'Fixing Deprecations'
+  | 'Re-Testing'
+  | 'Done'
+  | 'Needs Human Review';
 
 export interface UcSummary {
   id: string;

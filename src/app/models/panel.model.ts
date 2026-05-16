@@ -13,7 +13,9 @@ export type ViewType =
   | 'test-state-diff'
   | 'contract-validation'
   | 'mockup'
-  | 'mockups-diff';
+  | 'mockups-diff'
+  | 'test-report-backend'
+  | 'test-report-frontend';
 
 export const VIEW_TYPE_LABELS: Record<ViewType, string> = {
   'uc-tracker': 'UC Tracker',
@@ -31,6 +33,8 @@ export const VIEW_TYPE_LABELS: Record<ViewType, string> = {
   'contract-validation': 'Contract',
   'mockup': 'Mockup',
   'mockups-diff': 'Mockups Diff',
+  'test-report-backend': 'Backend Report',
+  'test-report-frontend': 'Frontend Report',
 };
 
 export const VIEW_TYPE_LIST: ViewType[] = Object.keys(VIEW_TYPE_LABELS) as ViewType[];
