@@ -1,5 +1,5 @@
 import { Component, OnInit, OnDestroy, inject, signal } from '@angular/core';
-import { GridsterModule, GridsterConfig, GridType, CompactType, DisplayGrid } from 'angular-gridster2';
+import { Gridster, GridsterItem, GridsterConfig, GridType, CompactType, DisplayGrid } from 'angular-gridster2';
 import { Store } from '@ngrx/store';
 import { Subscription } from 'rxjs';
 import { PanelComponent } from '../panel/panel.component';
@@ -10,7 +10,7 @@ import { Panel } from '../../models/panel.model';
 @Component({
   selector: 'app-panel-grid',
   standalone: true,
-  imports: [GridsterModule, PanelComponent],
+  imports: [Gridster, GridsterItem, PanelComponent],
   template: `
     <gridster [options]="options" class="grid-host">
       @for (item of gridItems(); track item.id) {

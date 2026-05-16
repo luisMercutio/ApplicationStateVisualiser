@@ -2,7 +2,15 @@
   "permissions": {
     "allow": [
       "Bash(npm --version)",
-      "Bash(ng version *)"
+      "Bash(ng version *)",
+      "Bash(npm install *)",
+      "Bash(node -e \"console.log\\(process.arch\\)\")",
+      "Bash(npm ls *)",
+      "Bash(npm show *)",
+      "Bash(npm audit *)",
+      "Bash(npm run *)",
+      "Bash(node -e \"const m = require\\('./node_modules/angular-gridster2'\\); console.log\\(Object.keys\\(m\\)\\)\")",
+      "Bash(node -e \"const f = require\\('./node_modules/angular-gridster2/index.js'\\); console.log\\(Object.keys\\(f\\)\\)\")"
     ]
   }
 }
