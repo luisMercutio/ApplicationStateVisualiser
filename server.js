@@ -80,4 +80,61 @@ app.get('/api/mockup', async (req, res) => {
 
 app.get('/api/ping', (_req, res) => res.json({ ok: true }));
 
+// ── Layouts ──────────────────────────────────────────────────────────────────
+
+function layoutsBase() {
+  return path.resolve(__dirname, 'layouts');
+}
+
+function safeLayoutPath(name) {
+  if (!/^[a-zA-Z0-9 _-]+$/.test(name)) throw new Error('Invalid layout name');
+  return path.resolve(layoutsBase(), `${name}.json`);
+}
+
+app.get('/api/layouts', async (_req, res) => {
+  try {
+    const base = layoutsBase();
+    let entries;
+    try { entries = await fs.readdir(base); } catch { return res.json({ names: [] }); }
+    const names = entries.filter(f => f.endsWith('.json')).map(f => f.slice(0, -5)).sort();
+    res.json({ names });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/layouts/:name', async (req, res) => {
+  const { name } = req.params;
+  try {
+    const abs = safeLayoutPath(name);
+    const content = await fs.readFile(abs, 'utf-8');
+    res.json(JSON.parse(content));
+  } catch (err) {
+    res.status(404).json({ error: err.message });
+  }
+});
+
+app.put('/api/layouts/:name', async (req, res) => {
+  const { name } = req.params;
+  try {
+    const abs = safeLayoutPath(name);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, JSON.stringify(req.body, null, 2), 'utf-8');
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/layouts/:name', async (req, res) => {
+  const { name } = req.params;
+  try {
+    const abs = safeLayoutPath(name);
+    await fs.unlink(abs);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(404).json({ error: err.message });
+  }
+});
+
 app.listen(PORT, () => console.log(`UC Arch Viewer server on http://localhost:${PORT}`));

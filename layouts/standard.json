@@ -1,0 +1,132 @@
+[
+  {
+    "id": "default-2",
+    "viewType": "suggestion",
+    "ucId": null,
+    "pinned": false,
+    "x": 0,
+    "y": 0,
+    "rows": 4,
+    "cols": 3
+  },
+  {
+    "id": "mp86tjxmd4x0ww",
+    "viewType": "class-diagram",
+    "ucId": null,
+    "pinned": false,
+    "x": 0,
+    "y": 4,
+    "rows": 3,
+    "cols": 6
+  },
+  {
+    "id": "mp86tjxmspr4fe",
+    "viewType": "class-diagram-diff",
+    "ucId": null,
+    "pinned": false,
+    "x": 6,
+    "y": 4,
+    "rows": 3,
+    "cols": 3
+  },
+  {
+    "id": "mp86tjxmyu3sv7",
+    "viewType": "openapi",
+    "ucId": null,
+    "pinned": false,
+    "x": 0,
+    "y": 7,
+    "rows": 3,
+    "cols": 3
+  },
+  {
+    "id": "mp86tjxml55vsl",
+    "viewType": "openapi-diff",
+    "ucId": null,
+    "pinned": false,
+    "x": 3,
+    "y": 7,
+    "rows": 3,
+    "cols": 3
+  },
+  {
+    "id": "mp86tjxm3p1z14",
+    "viewType": "frontend-state",
+    "ucId": null,
+    "pinned": false,
+    "x": 0,
+    "y": 10,
+    "rows": 3,
+    "cols": 6
+  },
+  {
+    "id": "mp86tjxnk3bgp9",
+    "viewType": "frontend-state-diff",
+    "ucId": null,
+    "pinned": false,
+    "x": 6,
+    "y": 10,
+    "rows": 3,
+    "cols": 3
+  },
+  {
+    "id": "mp86tjxnuab520",
+    "viewType": "selectors",
+    "ucId": null,
+    "pinned": false,
+    "x": 0,
+    "y": 13,
+    "rows": 3,
+    "cols": 4
+  },
+  {
+    "id": "mp86tjxnncbq78",
+    "viewType": "selectors-diff",
+    "ucId": null,
+    "pinned": false,
+    "x": 4,
+    "y": 13,
+    "rows": 3,
+    "cols": 5
+  },
+  {
+    "id": "mp86tjxngu1t5t",
+    "viewType": "test-state",
+    "ucId": null,
+    "pinned": false,
+    "x": 0,
+    "y": 16,
+    "rows": 4,
+    "cols": 4
+  },
+  {
+    "id": "mp86tjxn3y2ym5",
+    "viewType": "test-state-diff",
+    "ucId": null,
+    "pinned": false,
+    "x": 4,
+    "y": 16,
+    "rows": 3,
+    "cols": 5
+  },
+  {
+    "id": "mp86tjxnw80y4g",
+    "viewType": "contract-validation",
+    "ucId": null,
+    "pinned": false,
+    "x": 6,
+    "y": 7,
+    "rows": 3,
+    "cols": 3
+  },
+  {
+    "id": "mp86tjxozrzcgq",
+    "viewType": "mockup",
+    "ucId": null,
+    "pinned": false,
+    "x": 3,
+    "y": 0,
+    "rows": 4,
+    "cols": 6
+  }
+]

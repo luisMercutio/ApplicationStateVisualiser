@@ -4,6 +4,7 @@ import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { filter, take } from 'rxjs';
 import { selectRootPath, selectPanels } from './store/layout/layout.selectors';
 import { LayoutActions } from './store/layout/layout.actions';
+import { LayoutsActions } from './store/layouts/layouts.actions';
 import { UcActions } from './store/uc/uc.actions';
 import { FolderPickerComponent } from './components/folder-picker/folder-picker.component';
 import { ToolbarComponent } from './components/toolbar/toolbar.component';
@@ -46,6 +47,7 @@ export class AppComponent implements OnInit {
   ngOnInit(): void {
     if (this.rootPath()) {
       this.store.dispatch(UcActions.loadUsecases());
+      this.store.dispatch(LayoutsActions.loadLayouts());
     }
   }
 

@@ -10,6 +10,8 @@ import { ucFeature } from './store/uc/uc.reducer';
 import { UcEffects } from './store/uc/uc.effects';
 import { filesFeature } from './store/files/files.reducer';
 import { FilesEffects } from './store/files/files.effects';
+import { layoutsFeature } from './store/layouts/layouts.reducer';
+import { LayoutsEffects } from './store/layouts/layouts.effects';
 
 export const appConfig: ApplicationConfig = {
   providers: [
@@ -20,8 +22,9 @@ export const appConfig: ApplicationConfig = {
       [layoutFeature.name]: layoutFeature.reducer,
       [ucFeature.name]: ucFeature.reducer,
       [filesFeature.name]: filesFeature.reducer,
+      [layoutsFeature.name]: layoutsFeature.reducer,
     }),
-    provideEffects([LayoutEffects, UcEffects, FilesEffects]),
+    provideEffects([LayoutEffects, UcEffects, FilesEffects, LayoutsEffects]),
     provideStoreDevtools({ maxAge: 25, logOnly: !isDevMode() }),
   ],
 };
