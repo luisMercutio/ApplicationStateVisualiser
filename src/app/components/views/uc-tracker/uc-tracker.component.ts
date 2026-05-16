@@ -6,19 +6,18 @@ import { selectFileContent, selectFileLoading, selectFileError } from '../../../
 import { FilesActions } from '../../../store/files/files.actions';
 import { LayoutActions } from '../../../store/layout/layout.actions';
 import { UcStatus } from '../../../models/uc.model';
+import { LoadingStateComponent } from '../../loading-state/loading-state.component';
 
 interface UcRow { id: string; title: string; status: UcStatus; updated: string; }
 
 @Component({
   selector: 'app-uc-tracker',
   standalone: true,
-  imports: [MatIconModule],
+  imports: [MatIconModule, LoadingStateComponent],
   template: `
     <div class="panel-content">
-      @if (loading()) {
-        <div class="placeholder-empty"><mat-icon>hourglass_top</mat-icon> Loading...</div>
-      } @else if (error()) {
-        <div class="placeholder-empty"><mat-icon>error_outline</mat-icon> {{ error() }}</div>
+      @if (loading() || error()) {
+        <app-loading-state [loading]="loading()" [error]="error()"></app-loading-state>
       } @else if (!rows().length) {
         <div class="placeholder-empty"><mat-icon>table_chart</mat-icon> No use-cases found in usecases.md</div>
       } @else {

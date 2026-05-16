@@ -5,21 +5,20 @@ import { MatIconModule } from '@angular/material/icon';
 import { Subscription } from 'rxjs';
 import { selectFileContent, selectFileLoading, selectFileError } from '../../../store/files/files.selectors';
 import { FilesActions } from '../../../store/files/files.actions';
+import { LoadingStateComponent } from '../../loading-state/loading-state.component';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 
 @Component({
   selector: 'app-diff-view',
   standalone: true,
-  imports: [MatIconModule],
+  imports: [MatIconModule, LoadingStateComponent],
   template: `
     <div class="panel-content">
-      @if (loading()) {
-        <div class="placeholder-empty"><mat-icon>hourglass_top</mat-icon> Loading...</div>
+      @if (loading() || error()) {
+        <app-loading-state [loading]="loading()" [error]="error()"></app-loading-state>
       } @else if (!filePath) {
         <div class="placeholder-empty"><mat-icon>difference</mat-icon> Select a UC</div>
-      } @else if (error()) {
-        <div class="placeholder-empty"><mat-icon>difference</mat-icon> Not yet generated</div>
       } @else {
         <div class="diff-body" [innerHTML]="html()"></div>
       }

@@ -5,6 +5,7 @@ import { MatSelectModule } from '@angular/material/select';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { FormsModule } from '@angular/forms';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
+import { LoadingStateComponent } from '../../loading-state/loading-state.component';
 import { Subscription } from 'rxjs';
 import { FileService } from '../../../services/file.service';
 import { selectRootPath } from '../../../store/layout/layout.selectors';
@@ -12,7 +13,7 @@ import { selectRootPath } from '../../../store/layout/layout.selectors';
 @Component({
   selector: 'app-mockup-view',
   standalone: true,
-  imports: [MatIconModule, MatSelectModule, MatFormFieldModule, FormsModule],
+  imports: [MatIconModule, MatSelectModule, MatFormFieldModule, FormsModule, LoadingStateComponent],
   template: `
     <div class="mockup-wrap">
       @if (!ucId) {
@@ -20,7 +21,7 @@ import { selectRootPath } from '../../../store/layout/layout.selectors';
       } @else if (!mockupFiles().length && !loading()) {
         <div class="placeholder-empty"><mat-icon>web</mat-icon> No mockups generated yet</div>
       } @else if (loading()) {
-        <div class="placeholder-empty"><mat-icon>hourglass_top</mat-icon> Loading...</div>
+        <app-loading-state [loading]="true" [error]="null"></app-loading-state>
       } @else {
         <div class="mockup-toolbar">
           <mat-form-field appearance="outline" subscriptSizing="dynamic" class="file-select">

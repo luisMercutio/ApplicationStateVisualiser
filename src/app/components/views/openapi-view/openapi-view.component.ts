@@ -5,6 +5,7 @@ import { MatExpansionModule } from '@angular/material/expansion';
 import { Subscription } from 'rxjs';
 import { selectFileContent, selectFileLoading, selectFileError } from '../../../store/files/files.selectors';
 import { FilesActions } from '../../../store/files/files.actions';
+import { LoadingStateComponent } from '../../loading-state/loading-state.component';
 import * as yaml from 'js-yaml';
 
 interface Endpoint { method: string; path: string; summary: string; description: string; parameters?: any[]; responses?: any; requestBody?: any; }
@@ -13,15 +14,13 @@ interface ApiInfo { title: string; version: string; description?: string; }
 @Component({
   selector: 'app-openapi-view',
   standalone: true,
-  imports: [MatIconModule, MatExpansionModule],
+  imports: [MatIconModule, MatExpansionModule, LoadingStateComponent],
   template: `
     <div class="panel-content">
-      @if (loading()) {
-        <div class="placeholder-empty"><mat-icon>hourglass_top</mat-icon> Loading...</div>
+      @if (loading() || error()) {
+        <app-loading-state [loading]="loading()" [error]="error()"></app-loading-state>
       } @else if (!filePath) {
         <div class="placeholder-empty"><mat-icon>api</mat-icon> Select a UC</div>
-      } @else if (error()) {
-        <div class="placeholder-empty"><mat-icon>api</mat-icon> Not yet generated</div>
       } @else if (info()) {
         <div class="api-info">
           <h3>{{ info()!.title }}</h3>

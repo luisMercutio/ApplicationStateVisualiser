@@ -5,6 +5,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { Subscription } from 'rxjs';
 import { selectFileContent, selectFileLoading, selectFileError } from '../../../store/files/files.selectors';
 import { FilesActions } from '../../../store/files/files.actions';
+import { LoadingStateComponent } from '../../loading-state/loading-state.component';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 
@@ -13,15 +14,13 @@ interface Frontmatter { type?: string; uc?: string; status?: string; updated?: s
 @Component({
   selector: 'app-suggestion',
   standalone: true,
-  imports: [MatIconModule],
+  imports: [MatIconModule, LoadingStateComponent],
   template: `
     <div class="panel-content">
-      @if (loading()) {
-        <div class="placeholder-empty"><mat-icon>hourglass_top</mat-icon> Loading...</div>
+      @if (loading() || error()) {
+        <app-loading-state [loading]="loading()" [error]="error()"></app-loading-state>
       } @else if (!filePath) {
         <div class="placeholder-empty"><mat-icon>description</mat-icon> Select a UC</div>
-      } @else if (error()) {
-        <div class="placeholder-empty"><mat-icon>description</mat-icon> Not yet generated</div>
       } @else if (fm()) {
         <div class="fm-banner" [class]="'status-' + (fm()?.status ?? 'draft').toLowerCase()">
           <span class="uc-chip">{{ fm()?.uc }}</span>

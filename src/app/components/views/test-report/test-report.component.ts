@@ -6,6 +6,7 @@ import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { Subscription } from 'rxjs';
 import { selectFileContent, selectFileLoading, selectFileError } from '../../../store/files/files.selectors';
 import { FilesActions } from '../../../store/files/files.actions';
+import { LoadingStateComponent } from '../../loading-state/loading-state.component';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 
@@ -14,15 +15,13 @@ interface ReportSection { heading: string; html: SafeHtml; }
 @Component({
   selector: 'app-test-report',
   standalone: true,
-  imports: [MatIconModule, MatExpansionModule],
+  imports: [MatIconModule, MatExpansionModule, LoadingStateComponent],
   template: `
     <div class="panel-content">
-      @if (loading()) {
-        <div class="placeholder-empty"><mat-icon>hourglass_top</mat-icon> Loading...</div>
+      @if (loading() || error()) {
+        <app-loading-state [loading]="loading()" [error]="error()"></app-loading-state>
       } @else if (!filePath) {
         <div class="placeholder-empty"><mat-icon>science</mat-icon> Select a UC</div>
-      } @else if (error()) {
-        <div class="placeholder-empty"><mat-icon>science</mat-icon> Not yet generated</div>
       } @else {
         <div class="report-header">
           <span class="report-title">{{ title() }}</span>

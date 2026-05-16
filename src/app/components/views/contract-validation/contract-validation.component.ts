@@ -4,6 +4,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { Subscription } from 'rxjs';
 import { selectFileContent, selectFileLoading, selectFileError } from '../../../store/files/files.selectors';
 import { FilesActions } from '../../../store/files/files.actions';
+import { LoadingStateComponent } from '../../loading-state/loading-state.component';
 
 interface ValidationResult {
   result: 'PASS' | 'FAIL';
@@ -15,15 +16,13 @@ interface ValidationResult {
 @Component({
   selector: 'app-contract-validation',
   standalone: true,
-  imports: [MatIconModule],
+  imports: [MatIconModule, LoadingStateComponent],
   template: `
     <div class="panel-content cv-panel">
-      @if (loading()) {
-        <div class="placeholder-empty"><mat-icon>hourglass_top</mat-icon> Loading...</div>
+      @if (loading() || error()) {
+        <app-loading-state [loading]="loading()" [error]="error()"></app-loading-state>
       } @else if (!filePath) {
         <div class="placeholder-empty"><mat-icon>verified</mat-icon> Select a UC</div>
-      } @else if (error()) {
-        <div class="placeholder-empty"><mat-icon>verified</mat-icon> Not yet generated</div>
       } @else if (data()) {
         <div class="result-badge" [class.pass]="data()?.result === 'PASS'" [class.fail]="data()?.result === 'FAIL'">
           <mat-icon>{{ data()?.result === 'PASS' ? 'check_circle' : 'cancel' }}</mat-icon>

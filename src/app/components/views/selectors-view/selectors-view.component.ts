@@ -4,6 +4,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { Subscription } from 'rxjs';
 import { selectFileContent, selectFileLoading, selectFileError } from '../../../store/files/files.selectors';
 import { FilesActions } from '../../../store/files/files.actions';
+import { LoadingStateComponent } from '../../loading-state/loading-state.component';
 import * as yaml from 'js-yaml';
 
 interface SelectorItem { name: string; slice: string; returnType: string; }
@@ -11,15 +12,13 @@ interface SelectorItem { name: string; slice: string; returnType: string; }
 @Component({
   selector: 'app-selectors-view',
   standalone: true,
-  imports: [MatIconModule],
+  imports: [MatIconModule, LoadingStateComponent],
   template: `
     <div class="panel-content">
-      @if (loading()) {
-        <div class="placeholder-empty"><mat-icon>hourglass_top</mat-icon> Loading...</div>
+      @if (loading() || error()) {
+        <app-loading-state [loading]="loading()" [error]="error()"></app-loading-state>
       } @else if (!filePath) {
         <div class="placeholder-empty"><mat-icon>filter_list</mat-icon> Select a UC</div>
-      } @else if (error()) {
-        <div class="placeholder-empty"><mat-icon>filter_list</mat-icon> Not yet generated</div>
       } @else {
         @for (entry of grouped(); track entry.slice) {
           <div class="slice-group">

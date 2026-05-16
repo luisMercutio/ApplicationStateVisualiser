@@ -17,7 +17,8 @@
       "Bash(Select-Object -First 20)",
       "Bash(Format-Table -Property Name, FullName)",
       "Bash(xargs grep -l \"MatDialog\\\\|openDialog\\\\|dialog.open\")",
-      "PowerShell(Get-ChildItem \"C:\\\\Users\\\\lenovo\\\\Documents\\\\GitHub\\\\ApplicationStateVisualiser\\\\src\\\\app\" -File | Where-Object { $_.Extension -eq \".ts\" } | Select-Object Name)"
+      "PowerShell(Get-ChildItem \"C:\\\\Users\\\\lenovo\\\\Documents\\\\GitHub\\\\ApplicationStateVisualiser\\\\src\\\\app\" -File | Where-Object { $_.Extension -eq \".ts\" } | Select-Object Name)",
+      "Bash(npx tsc *)"
     ]
   }
 }
