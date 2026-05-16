@@ -11,7 +11,11 @@ export class FileService {
 
   getFile(root: string, filePath: string): Observable<string> {
     const params = new HttpParams().set('root', root).set('path', filePath);
-    return this.http.get(`${API_BASE}/api/file`, { params, responseType: 'text' });
+    return this.http.get(`${API_BASE}/api/file`, {
+      params,
+      responseType: 'text',
+      headers: { 'Cache-Control': 'no-cache' },
+    });
   }
 
   getTree(root: string): Observable<{ tree: FileTreeNode[] }> {

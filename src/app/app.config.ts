@@ -1,8 +1,9 @@
-import { ApplicationConfig, provideZoneChangeDetection } from '@angular/core';
+import { ApplicationConfig, isDevMode, provideZoneChangeDetection } from '@angular/core';
 import { provideHttpClient } from '@angular/common/http';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
 import { provideStore } from '@ngrx/store';
 import { provideEffects } from '@ngrx/effects';
+import { provideStoreDevtools } from '@ngrx/store-devtools';
 import { layoutFeature } from './store/layout/layout.reducer';
 import { LayoutEffects } from './store/layout/layout.effects';
 import { ucFeature } from './store/uc/uc.reducer';
@@ -21,5 +22,6 @@ export const appConfig: ApplicationConfig = {
       [filesFeature.name]: filesFeature.reducer,
     }),
     provideEffects([LayoutEffects, UcEffects, FilesEffects]),
+    provideStoreDevtools({ maxAge: 25, logOnly: !isDevMode() }),
   ],
 };

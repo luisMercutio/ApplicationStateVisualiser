@@ -17,11 +17,11 @@ export const filesFeature = createFeature({
   name: 'files',
   reducer: createReducer(
     initialState,
-    on(FilesActions.loadFile, (state, { path }) => ({
-      ...state,
-      loading: { ...state.loading, [path]: true },
-      errors: { ...state.errors, [path]: '' },
-    })),
+    on(FilesActions.loadFile, (state, { path }) =>
+      path in state.cache
+        ? state
+        : { ...state, loading: { ...state.loading, [path]: true }, errors: { ...state.errors, [path]: '' } }
+    ),
     on(FilesActions.loadFileSuccess, (state, { path, content }) => ({
       ...state,
       cache: { ...state.cache, [path]: content },
