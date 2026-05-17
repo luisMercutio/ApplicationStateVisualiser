@@ -9,7 +9,17 @@ import { LoadingStateComponent } from '../../loading-state/loading-state.compone
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 
-interface Frontmatter { type?: string; uc?: string; status?: string; updated?: string; }
+interface Frontmatter {
+  type?: string;
+  uc?: string;
+  status?: string;
+  updated?: string;
+  retrospec?: string;
+  anchor?: string;
+  'bridge-uc'?: string;
+  'bridge-for'?: string;
+  'inserts-before'?: string;
+}
 
 @Component({
   selector: 'app-suggestion',
@@ -22,9 +32,21 @@ interface Frontmatter { type?: string; uc?: string; status?: string; updated?: s
       } @else if (!filePath) {
         <div class="placeholder-empty"><mat-icon>description</mat-icon> Select a UC</div>
       } @else if (fm()) {
-        <div class="fm-banner" [class]="'status-' + (fm()?.status ?? 'draft').toLowerCase()">
+        <div class="fm-banner" [class]="'status-' + slugify(fm()?.status ?? 'draft')">
           <span class="uc-chip">{{ fm()?.uc }}</span>
+          @if (fm()?.retrospec === 'true') {
+            <span class="retrospec-badge">Spec only</span>
+          }
           <span class="status-chip">{{ fm()?.status }}</span>
+          @if (fm()?.['bridge-for']) {
+            <span class="bridge-link-chip">Bridge for &#8594; {{ fm()?.['bridge-for'] }}</span>
+          }
+          @if (fm()?.['bridge-uc']) {
+            <span class="bridge-link-chip muted">Paired bridge &#8594; {{ fm()?.['bridge-uc'] }}</span>
+          }
+          @if (fm()?.anchor) {
+            <span class="anchor-chip">Anchored at {{ fm()?.anchor }}</span>
+          }
           <span class="updated">Updated: {{ fm()?.updated }}</span>
         </div>
         <div class="md-body" [innerHTML]="html()"></div>
@@ -36,9 +58,14 @@ interface Frontmatter { type?: string; uc?: string; status?: string; updated?: s
     .fm-banner.status-draft { background: #f5f5f5; border: 1px solid #e0e0e0; }
     .fm-banner.status-approved { background: #e3f2fd; border: 1px solid #90caf9; }
     .fm-banner.status-implemented { background: #e8f5e9; border: 1px solid #a5d6a7; }
+    .fm-banner.status-retroactive { background: #f5f5f5; border: 1px solid #e0e0e0; opacity: 0.8; }
     .uc-chip { font-weight: 700; color: #3f51b5; font-family: monospace; font-size: 14px; }
     .status-chip { padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; background: rgba(0,0,0,0.08); }
     .updated { font-size: 12px; color: #888; margin-left: auto; }
+    .retrospec-badge { padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; background: #f5f5f5; color: #9e9e9e; border: 1px solid #e0e0e0; }
+    .bridge-link-chip { padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; background: #e8eaf6; color: #3f51b5; }
+    .bridge-link-chip.muted { background: #f3e5f5; color: #6a1b9a; }
+    .anchor-chip { padding: 2px 10px; border-radius: 12px; font-size: 12px; color: #888; background: #fafafa; border: 1px solid #eeeeee; }
     .md-body { font-size: 14px; line-height: 1.6; }
     .md-body ::ng-deep h1,h2,h3 { margin-top: 1em; }
     .md-body ::ng-deep code { background: #f5f5f5; padding: 2px 4px; border-radius: 3px; font-size: 12px; }
@@ -64,6 +91,10 @@ export class SuggestionComponent implements OnInit, OnChanges, OnDestroy {
   }
   ngOnDestroy(): void { this.clearSubs(); }
   private clearSubs(): void { this.subs.forEach(s => s.unsubscribe()); this.subs = []; }
+
+  slugify(s: string): string {
+    return s.toLowerCase().replace(/\s+/g, '-');
+  }
 
   private subscribe(): void {
     if (!this.filePath) return;

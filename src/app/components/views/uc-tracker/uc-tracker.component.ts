@@ -2,13 +2,14 @@ import { Component, Input, OnInit, OnChanges, OnDestroy, SimpleChanges, inject, 
 import { Store } from '@ngrx/store';
 import { MatIconModule } from '@angular/material/icon';
 import { Subscription } from 'rxjs';
+import { filter } from 'rxjs/operators';
 import { selectFileContent, selectFileLoading, selectFileError } from '../../../store/files/files.selectors';
 import { FilesActions } from '../../../store/files/files.actions';
 import { LayoutActions } from '../../../store/layout/layout.actions';
 import { UcStatus } from '../../../models/uc.model';
 import { LoadingStateComponent } from '../../loading-state/loading-state.component';
 
-interface UcRow { id: string; title: string; status: UcStatus; updated: string; }
+interface UcRow { id: string; title: string; status: UcStatus; updated: string; bridgeFor?: string; }
 
 @Component({
   selector: 'app-uc-tracker',
@@ -25,9 +26,17 @@ interface UcRow { id: string; title: string; status: UcStatus; updated: string; 
           <thead><tr><th>ID</th><th>Title</th><th>Status</th><th>Updated</th></tr></thead>
           <tbody>
             @for (row of rows(); track row.id) {
-              <tr (click)="select(row.id)" class="uc-row">
+              <tr (click)="select(row.id)" class="uc-row" [class.uc-row-retroactive]="row.status === 'Retroactive'">
                 <td class="uc-id">{{ row.id }}</td>
-                <td>{{ row.title }}</td>
+                <td>
+                  {{ row.title }}
+                  @if (row.status === 'Retroactive') {
+                    <span class="spec-only-badge">Spec only</span>
+                  }
+                  @if (row.bridgeFor) {
+                    <span class="bridge-chip">Bridge &#8594; {{ row.bridgeFor }}</span>
+                  }
+                </td>
                 <td><span class="badge" [class]="'badge-' + slugify(row.status)">{{ row.status }}</span></td>
                 <td class="date">{{ row.updated }}</td>
               </tr>
@@ -43,6 +52,9 @@ interface UcRow { id: string; title: string; status: UcStatus; updated: string; 
     td { padding: 8px 10px; border-bottom: 1px solid #f0f0f0; }
     .uc-row { cursor: pointer; transition: background 0.15s; }
     .uc-row:hover { background: #e8eaf6; }
+    .uc-row-retroactive { opacity: 0.6; font-style: italic; }
+    .uc-row-retroactive .uc-id { color: #9e9e9e; }
+    .uc-row-retroactive:hover { background: #f5f5f5; }
     .uc-id { font-weight: 600; color: #3f51b5; font-family: monospace; }
     .date { color: #888; font-size: 12px; white-space: nowrap; }
     .badge { padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; text-transform: uppercase; white-space: nowrap; }
@@ -54,6 +66,9 @@ interface UcRow { id: string; title: string; status: UcStatus; updated: string; 
     .badge-re-testing { background: #fce4ec; color: #c62828; }
     .badge-done { background: #c8e6c9; color: #2e7d32; }
     .badge-needs-human-review { background: #ede7f6; color: #4527a0; }
+    .badge-retroactive { background: #eeeeee; color: #757575; }
+    .spec-only-badge { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 10px; font-size: 11px; font-weight: 600; font-style: normal; background: #f5f5f5; color: #9e9e9e; border: 1px solid #e0e0e0; }
+    .bridge-chip { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 10px; font-size: 11px; font-weight: 600; font-style: normal; background: #e8eaf6; color: #3f51b5; }
   `],
 })
 export class UcTrackerComponent implements OnInit, OnChanges, OnDestroy {
@@ -84,8 +99,33 @@ export class UcTrackerComponent implements OnInit, OnChanges, OnDestroy {
     this.subs.push(
       this.store.select(selectFileLoading(this.filePath)).subscribe(v => this.loading.set(v)),
       this.store.select(selectFileError(this.filePath)).subscribe(v => this.error.set(v)),
-      this.store.select(selectFileContent(this.filePath)).subscribe(c => this.rows.set(c ? parse(c) : [])),
+      this.store.select(selectFileContent(this.filePath)).subscribe(c => {
+        const parsed = c ? parse(c) : [];
+        this.rows.set(parsed);
+        this.loadBridgeMetadata(parsed);
+      }),
     );
+  }
+
+  private loadBridgeMetadata(rows: UcRow[]): void {
+    rows
+      .filter(row => row.status !== 'Retroactive')
+      .forEach(row => {
+        const path = `${row.id}/suggestion.md`;
+        this.store.dispatch(FilesActions.loadFile({ path }));
+        this.subs.push(
+          this.store.select(selectFileContent(path)).pipe(
+            filter((content): content is string => content != null),
+          ).subscribe(content => {
+            const bridgeFor = extractBridgeFor(content);
+            if (bridgeFor) {
+              this.rows.update(current =>
+                current.map(r => r.id === row.id ? { ...r, bridgeFor } : r),
+              );
+            }
+          }),
+        );
+      });
   }
 
   slugify(status: string): string {
@@ -105,4 +145,11 @@ function parse(md: string): UcRow[] {
     if (cols.length < 4) return null;
     return { id: cols[0], title: cols[1], status: cols[2] as UcStatus, updated: cols[3] };
   }).filter((r): r is UcRow => r !== null);
+}
+
+function extractBridgeFor(content: string): string | undefined {
+  const match = content.match(/^---\s*\n([\s\S]*?)\n---/);
+  if (!match) return undefined;
+  const line = match[1].split('\n').find(l => l.trim().startsWith('bridge-for:'));
+  return line ? line.slice(line.indexOf(':') + 1).trim() : undefined;
 }

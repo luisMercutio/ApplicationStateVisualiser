@@ -6,7 +6,8 @@ export type UcStatus =
   | 'Fixing Deprecations'
   | 'Re-Testing'
   | 'Done'
-  | 'Needs Human Review';
+  | 'Needs Human Review'
+  | 'Retroactive';
 
 export interface UcSummary {
   id: string;
