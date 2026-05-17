@@ -33,6 +33,10 @@ export class FileService {
     return this.http.get<{ ok: boolean }>(`${API_BASE}/api/ping`);
   }
 
+  getConfig(): Observable<{ standardUrl: string | null }> {
+    return this.http.get<{ standardUrl: string | null }>(`${API_BASE}/api/config`);
+  }
+
   listLayouts(): Observable<string[]> {
     return this.http.get<{ names: string[] }>(`${API_BASE}/api/layouts`).pipe(
       map(r => r.names),

@@ -3,12 +3,12 @@
   "version": "0.0.0",
   "scripts": {
     "ng": "ng",
-    "start": "ng serve --port 4200",
+    "start": "ng serve --port 4201",
     "build": "ng build",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
     "server": "node server.js",
-    "dev": "concurrently \"node server.js\" \"ng serve --port 4200\""
+    "dev": "concurrently \"node server.js\" \"ng serve --port 4201\""
   },
   "private": true,
   "dependencies": {

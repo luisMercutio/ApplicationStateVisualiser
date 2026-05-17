@@ -80,6 +80,10 @@ app.get('/api/mockup', async (req, res) => {
 
 app.get('/api/ping', (_req, res) => res.json({ ok: true }));
 
+app.get('/api/config', (_req, res) => {
+  res.json({ standardUrl: process.env.STANDARD_URL || null });
+});
+
 // ── Layouts ──────────────────────────────────────────────────────────────────
 
 function layoutsBase() {

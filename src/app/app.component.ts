@@ -1,4 +1,4 @@
-import { Component, inject, OnInit } from '@angular/core';
+import { Component, inject, OnInit, signal } from '@angular/core';
 import { Store } from '@ngrx/store';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { filter, take } from 'rxjs';
@@ -6,6 +6,8 @@ import { selectRootPath, selectPanels } from './store/layout/layout.selectors';
 import { LayoutActions } from './store/layout/layout.actions';
 import { LayoutsActions } from './store/layouts/layouts.actions';
 import { UcActions } from './store/uc/uc.actions';
+import { FilesActions } from './store/files/files.actions';
+import { FileService } from './services/file.service';
 import { FolderPickerComponent } from './components/folder-picker/folder-picker.component';
 import { ToolbarComponent } from './components/toolbar/toolbar.component';
 import { PanelGridComponent } from './components/panel-grid/panel-grid.component';
@@ -22,15 +24,17 @@ function newId(): string {
   standalone: true,
   imports: [MatDialogModule, FolderPickerComponent, ToolbarComponent, PanelGridComponent],
   template: `
-    @if (rootPath()) {
-      <div class="app-shell">
-        <app-toolbar (addPanel)="openAddPanel()" (changeRoot)="changeRoot()"></app-toolbar>
-        <div class="workspace">
-          <app-panel-grid></app-panel-grid>
+    @if (!initializing()) {
+      @if (rootPath()) {
+        <div class="app-shell">
+          <app-toolbar (addPanel)="openAddPanel()" (changeRoot)="changeRoot()"></app-toolbar>
+          <div class="workspace">
+            <app-panel-grid></app-panel-grid>
+          </div>
         </div>
-      </div>
-    } @else {
-      <app-folder-picker></app-folder-picker>
+      } @else {
+        <app-folder-picker></app-folder-picker>
+      }
     }
   `,
   styles: [`
@@ -41,13 +45,30 @@ function newId(): string {
 export class AppComponent implements OnInit {
   private store = inject(Store);
   private dialog = inject(MatDialog);
+  private fileService = inject(FileService);
 
   rootPath = toSignal(this.store.select(selectRootPath), { initialValue: null });
+  initializing = signal(true);
 
   ngOnInit(): void {
     if (this.rootPath()) {
       this.store.dispatch(UcActions.loadUsecases());
       this.store.dispatch(LayoutsActions.loadLayouts());
+      this.initializing.set(false);
+    } else {
+      this.fileService.getConfig().subscribe({
+        next: ({ standardUrl }) => {
+          if (standardUrl) {
+            this.store.dispatch(FilesActions.clearCache());
+            this.store.dispatch(LayoutActions.setRootPath({ rootPath: standardUrl }));
+            this.store.dispatch(UcActions.loadUsecases());
+          }
+          this.initializing.set(false);
+        },
+        error: () => {
+          this.initializing.set(false);
+        },
+      });
     }
   }
 
