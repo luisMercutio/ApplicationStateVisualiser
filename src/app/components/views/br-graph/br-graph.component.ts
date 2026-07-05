@@ -6,7 +6,7 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatMenuModule } from '@angular/material/menu';
 import { Store } from '@ngrx/store';
 import { Subscription } from 'rxjs';
-import { BusinessRule, BrPosition, categoryColor } from '../../../models/business-rule.model';
+import { BusinessRule, BrPosition, BrTouches, categoryColor } from '../../../models/business-rule.model';
 import { BrActions } from '../../../store/br/br.actions';
 import {
   selectBrRules, selectBrPositions, selectBrEdges, selectBrLoading, selectBrError,
@@ -17,6 +17,17 @@ const NODE_W = 210;
 const NODE_H = 66;
 
 interface EdgeLine { from: string; to: string; x1: number; y1: number; x2: number; y2: number; }
+interface TouchGroup { key: keyof BrTouches; label: string; icon: string; items: string[]; }
+
+const TOUCH_META: Array<{ key: keyof BrTouches; label: string; icon: string }> = [
+  { key: 'entities', label: 'Backend entities', icon: 'schema' },
+  { key: 'endpoints', label: 'API endpoints', icon: 'api' },
+  { key: 'slices', label: 'Store slices', icon: 'inventory_2' },
+  { key: 'selectors', label: 'Selectors', icon: 'filter_alt' },
+  { key: 'components', label: 'Components', icon: 'widgets' },
+  { key: 'mockups', label: 'Mockups', icon: 'web' },
+  { key: 'tests', label: 'Test library', icon: 'checklist' },
+];
 
 @Component({
   selector: 'app-br-graph',
@@ -51,47 +62,97 @@ interface EdgeLine { from: string; to: string; x1: number; y1: number; x2: numbe
       } @else if (!rules().length) {
         <div class="msg">No business-rules.json found in this project. Run the backfill script or /uc-generate.</div>
       } @else {
-        <div class="br-scroll" (mousedown)="onBackgroundDown($event)">
-          <div class="br-canvas" [style.width.px]="canvas().w" [style.height.px]="canvas().h"
-               [style.transform]="'scale(' + zoom() + ')'">
-            <svg class="edges" [attr.width]="canvas().w" [attr.height]="canvas().h">
-              @for (e of edgeLines(); track e.from + '->' + e.to) {
-                <path [attr.d]="edgePath(e)"
-                      class="edge"
-                      [class.hot]="isEdgeHot(e)"
-                      [class.dim]="selectedId() && !isEdgeHot(e)"></path>
-              }
-            </svg>
-            @for (r of rules(); track r.id) {
-              <div class="node"
-                   [class.selected]="r.id === selectedId()"
-                   [class.connected]="connected().has(r.id)"
-                   [class.dim]="selectedId() && !connected().has(r.id)"
-                   [style.left.px]="pos()[r.id]?.x ?? 0"
-                   [style.top.px]="pos()[r.id]?.y ?? 0"
-                   [style.width.px]="nodeW" [style.borderLeftColor]="color(r)"
-                   (mousedown)="onNodeDown($event, r.id)"
-                   [matTooltip]="r.rule">
-                <div class="n-head">
-                  <span class="n-id">{{ r.id }}</span>
-                  <span class="n-uc">{{ r.uc }}</span>
-                  <button mat-icon-button class="n-menu" (mousedown)="$event.stopPropagation()"
-                          [matMenuTriggerFor]="brMenu" (menuOpened)="select(r.id)"
-                          matTooltip="Views for this rule">
-                    <mat-icon>more_vert</mat-icon>
-                  </button>
+        <div class="br-main">
+          <div class="br-scroll" (mousedown)="onBackgroundDown($event)">
+            <div class="br-canvas" [style.width.px]="canvas().w" [style.height.px]="canvas().h"
+                 [style.transform]="'scale(' + zoom() + ')'">
+              <svg class="edges" [attr.width]="canvas().w" [attr.height]="canvas().h">
+                @for (e of edgeLines(); track e.from + '->' + e.to) {
+                  <path [attr.d]="edgePath(e)" class="edge"
+                        [class.hot]="isEdgeHot(e)"
+                        [class.dim]="selectedId() && !isEdgeHot(e)"></path>
+                }
+              </svg>
+              @for (r of rules(); track r.id) {
+                <div class="node"
+                     [class.selected]="r.id === selectedId()"
+                     [class.connected]="connected().has(r.id)"
+                     [class.dim]="selectedId() && !connected().has(r.id)"
+                     [style.left.px]="pos()[r.id]?.x ?? 0"
+                     [style.top.px]="pos()[r.id]?.y ?? 0"
+                     [style.width.px]="nodeW" [style.borderLeftColor]="color(r)"
+                     (mousedown)="onNodeDown($event, r.id)"
+                     [matTooltip]="r.rule">
+                  <div class="n-head">
+                    <span class="n-id">{{ r.id }}</span>
+                    <span class="n-uc">{{ r.uc }}</span>
+                    <button mat-icon-button class="n-menu" (mousedown)="$event.stopPropagation()"
+                            [matMenuTriggerFor]="brMenu" (menuOpened)="select(r.id)"
+                            matTooltip="Views for this rule">
+                      <mat-icon>more_vert</mat-icon>
+                    </button>
+                  </div>
+                  <div class="n-rule">{{ r.rule }}</div>
                 </div>
-                <div class="n-rule">{{ r.rule }}</div>
-              </div>
-            }
+              }
+            </div>
           </div>
+
+          @if (selected(); as sel) {
+            <div class="br-detail">
+              <div class="d-head">
+                <span class="d-id" [style.color]="color(sel)">{{ sel.id }}</span>
+                <span class="d-uc">{{ sel.uc }}</span>
+                <span class="d-cat" [style.background]="color(sel)">{{ sel.category }}</span>
+                <button mat-icon-button class="sm" (click)="select(null)"><mat-icon>close</mat-icon></button>
+              </div>
+              <div class="d-rule">{{ sel.rule }}</div>
+              @if (sel.rationale) { <div class="d-rationale">{{ sel.rationale }}</div> }
+
+              @if (sel.dependsOn.length) {
+                <div class="d-group">
+                  <div class="d-label"><mat-icon>arrow_upward</mat-icon> Depends on</div>
+                  <div class="chips">
+                    @for (d of sel.dependsOn; track d) {
+                      <span class="chip link" (click)="select(d)">{{ d }}</span>
+                    }
+                  </div>
+                </div>
+              }
+              @if (dependents().length) {
+                <div class="d-group">
+                  <div class="d-label"><mat-icon>arrow_downward</mat-icon> Required by</div>
+                  <div class="chips">
+                    @for (d of dependents(); track d) {
+                      <span class="chip link" (click)="select(d)">{{ d }}</span>
+                    }
+                  </div>
+                </div>
+              }
+
+              @for (g of touchGroups(); track g.key) {
+                <div class="d-group" [class.focus]="focusKey() === g.key">
+                  <div class="d-label"><mat-icon>{{ g.icon }}</mat-icon> {{ g.label }} ({{ g.items.length }})</div>
+                  @for (it of g.items; track it) {
+                    <div class="t-item">{{ it }}</div>
+                  }
+                </div>
+              }
+              @if (!touchGroups().length) {
+                <div class="d-empty">No cross-artifact anchors recorded yet. Re-run /uc-generate to enrich this rule.</div>
+              }
+            </div>
+          }
         </div>
       }
 
-      <!-- P5 will fill this menu with cross-view actions -->
       <mat-menu #brMenu="matMenu">
         <button mat-menu-item (click)="highlight('connections')"><mat-icon>hub</mat-icon> Highlight connections</button>
-        <button mat-menu-item disabled><mat-icon>schema</mat-icon> Backend changes (soon)</button>
+        <button mat-menu-item (click)="highlight('backend')"><mat-icon>schema</mat-icon> Backend class diagram</button>
+        <button mat-menu-item (click)="highlight('frontend')"><mat-icon>inventory_2</mat-icon> Frontend state</button>
+        <button mat-menu-item (click)="highlight('mockups')"><mat-icon>web</mat-icon> Mockups</button>
+        <button mat-menu-item (click)="highlight('components')"><mat-icon>widgets</mat-icon> Components</button>
+        <button mat-menu-item (click)="highlight('tests')"><mat-icon>checklist</mat-icon> Test library</button>
       </mat-menu>
     </div>
   `,
@@ -108,6 +169,7 @@ interface EdgeLine { from: string; to: string; x1: number; y1: number; x2: numbe
     .lg i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
     .msg { padding: 24px; color: #999; text-align: center; }
     .msg.err { color: #c62828; }
+    .br-main { flex: 1; display: flex; min-height: 0; }
     .br-scroll { flex: 1; overflow: auto; position: relative; }
     .br-canvas { position: relative; transform-origin: 0 0; }
     svg.edges { position: absolute; top: 0; left: 0; pointer-events: none; overflow: visible; }
@@ -128,6 +190,22 @@ interface EdgeLine { from: string; to: string; x1: number; y1: number; x2: numbe
     .n-menu mat-icon { font-size: 15px; width: 15px; height: 15px; color: #999; }
     .n-rule { font-size: 11px; color: #555; line-height: 1.25; margin-top: 2px;
               display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .br-detail { width: 300px; flex-shrink: 0; border-left: 1px solid #e0e0e0; background: white; overflow-y: auto; padding: 10px 12px; }
+    .d-head { display: flex; align-items: center; gap: 6px; }
+    .d-id { font-family: monospace; font-weight: 700; font-size: 15px; }
+    .d-uc { font-size: 11px; color: #999; }
+    .d-cat { margin-left: auto; color: white; font-size: 10px; padding: 1px 8px; border-radius: 10px; text-transform: capitalize; }
+    .d-rule { font-size: 13px; line-height: 1.5; color: #222; margin: 8px 0; }
+    .d-rationale { font-size: 12px; color: #666; font-style: italic; margin-bottom: 8px; }
+    .d-group { margin-top: 10px; border-top: 1px solid #f0f0f0; padding-top: 8px; }
+    .d-group.focus { background: #fff3e0; border-radius: 6px; padding: 8px; }
+    .d-label { display: flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; color: #777; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 5px; }
+    .d-label mat-icon { font-size: 15px; width: 15px; height: 15px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+    .chip { font-family: monospace; font-size: 11px; background: #eef1f5; padding: 1px 7px; border-radius: 10px; color: #444; }
+    .chip.link { cursor: pointer; } .chip.link:hover { background: #ffccbc; }
+    .t-item { font-size: 11px; color: #555; padding: 3px 0; border-bottom: 1px dotted #eee; line-height: 1.4; }
+    .d-empty { font-size: 12px; color: #aaa; margin-top: 12px; }
   `],
 })
 export class BrGraphComponent implements OnInit, OnDestroy {
@@ -147,11 +225,31 @@ export class BrGraphComponent implements OnInit, OnDestroy {
   loading = signal(false);
   error = signal<string | null>(null);
   zoom = signal(1);
+  focusKey = signal<keyof BrTouches | null>(null);
 
   private dragId: string | null = null;
   private dragMoved = false;
   private startMouse = { x: 0, y: 0 };
   private startPos = { x: 0, y: 0 };
+
+  selected = computed<BusinessRule | null>(() => {
+    const id = this.selectedId();
+    return id ? this.byId()[id] ?? null : null;
+  });
+
+  dependents = computed<string[]>(() => {
+    const id = this.selectedId();
+    if (!id) return [];
+    return this.edges().filter((e) => e.from === id).map((e) => e.to);
+  });
+
+  touchGroups = computed<TouchGroup[]>(() => {
+    const sel = this.selected();
+    if (!sel?.touches) return [];
+    return TOUCH_META
+      .map((m) => ({ ...m, items: sel.touches[m.key] ?? [] }))
+      .filter((g) => g.items.length > 0);
+  });
 
   canvas = computed(() => {
     let w = 400, h = 300;
@@ -193,7 +291,10 @@ export class BrGraphComponent implements OnInit, OnDestroy {
     );
   }
 
-  ngOnDestroy(): void { this.subs.forEach((s) => s.unsubscribe()); }
+  ngOnDestroy(): void {
+    this.subs.forEach((s) => s.unsubscribe());
+    this.store.dispatch(BrActions.clearHighlight());
+  }
 
   color(r: BusinessRule): string { return categoryColor(r.category); }
 
@@ -206,13 +307,27 @@ export class BrGraphComponent implements OnInit, OnDestroy {
     return this.connected().has(e.from) && this.connected().has(e.to);
   }
 
+  /** Selecting a rule also broadcasts its touches so the other panels light up. */
   select(id: string | null): void {
     this.store.dispatch(BrActions.selectBr({ id }));
+    this.focusKey.set(null);
+    if (id) {
+      const r = this.byId()[id];
+      if (r) this.store.dispatch(BrActions.setHighlight({ highlight: { brId: id, kind: 'connections', touches: r.touches ?? {} } }));
+    } else {
+      this.store.dispatch(BrActions.clearHighlight());
+    }
   }
 
-  highlight(kind: 'connections'): void {
-    const r = this.selectedId() ? this.byId()[this.selectedId()!] : null;
-    if (r) this.store.dispatch(BrActions.setHighlight({ highlight: { brId: r.id, kind, touches: r.touches } }));
+  highlight(kind: 'connections' | 'backend' | 'frontend' | 'mockups' | 'components' | 'tests'): void {
+    const r = this.selected();
+    if (!r) return;
+    const focusMap: Record<string, keyof BrTouches | null> = {
+      connections: null, backend: 'entities', frontend: 'slices',
+      mockups: 'mockups', components: 'components', tests: 'tests',
+    };
+    this.focusKey.set(focusMap[kind]);
+    this.store.dispatch(BrActions.setHighlight({ highlight: { brId: r.id, kind, touches: r.touches ?? {} } }));
   }
 
   zoomBy(d: number): void { this.zoom.set(Math.min(2, Math.max(0.3, +(this.zoom() + d).toFixed(2)))); }

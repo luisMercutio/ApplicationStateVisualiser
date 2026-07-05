@@ -9,6 +9,7 @@ import { LoadingStateComponent } from '../../loading-state/loading-state.compone
 import { Subscription } from 'rxjs';
 import { FileService } from '../../../services/file.service';
 import { selectRootPath } from '../../../store/layout/layout.selectors';
+import { selectBrHighlight } from '../../../store/br/br.selectors';
 
 @Component({
   selector: 'app-mockup-view',
@@ -23,12 +24,20 @@ import { selectRootPath } from '../../../store/layout/layout.selectors';
       } @else if (loading()) {
         <app-loading-state [loading]="true" [error]="null"></app-loading-state>
       } @else {
+        @if (touchedNames().size) {
+          <div class="hl-banner"><mat-icon>my_location</mat-icon>
+            {{ highlightBrId() }} touches {{ touchedNames().size }} mockup(s) here
+          </div>
+        }
         <div class="mockup-toolbar">
           <mat-form-field appearance="outline" subscriptSizing="dynamic" class="file-select">
             <mat-label>Mockup file</mat-label>
             <mat-select [(ngModel)]="selectedFile" (ngModelChange)="updateIframeSrc()">
               @for (f of mockupFiles(); track f) {
-                <mat-option [value]="f">{{ fileName(f) }}</mat-option>
+                <mat-option [value]="f">
+                  @if (isTouched(f)) { <mat-icon class="star">star</mat-icon> }
+                  {{ fileName(f) }}
+                </mat-option>
               }
             </mat-select>
           </mat-form-field>
@@ -44,6 +53,9 @@ import { selectRootPath } from '../../../store/layout/layout.selectors';
     .mockup-toolbar { padding: 8px 12px; border-bottom: 1px solid #eee; flex-shrink: 0; }
     .file-select { width: 280px; }
     .mockup-frame { flex: 1; border: none; width: 100%; min-height: 0; }
+    .hl-banner { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #e65100; background: #fff3e0; padding: 4px 10px; }
+    .hl-banner mat-icon { font-size: 16px; width: 16px; height: 16px; }
+    .star { font-size: 14px; width: 14px; height: 14px; color: #ff7043; vertical-align: middle; }
   `],
 })
 export class MockupViewComponent implements OnInit, OnChanges, OnDestroy {
@@ -57,8 +69,28 @@ export class MockupViewComponent implements OnInit, OnChanges, OnDestroy {
   loading = signal(false);
   selectedFile = '';
   iframeSrc = signal<SafeResourceUrl | null>(null);
+  highlightBrId = signal<string | null>(null);
+  touchedNames = signal<Set<string>>(new Set());
 
-  ngOnInit(): void { this.load(); }
+  isTouched(path: string): boolean {
+    return this.touchedNames().has(this.fileName(path));
+  }
+
+  ngOnInit(): void {
+    this.load();
+    this.subs.push(
+      this.store.select(selectBrHighlight).subscribe(h => {
+        this.highlightBrId.set(h?.brId ?? null);
+        this.touchedNames.set(new Set(h?.touches.mockups ?? []));
+        // jump to the first touched mockup that exists in this UC
+        const hit = this.mockupFiles().find(f => this.isTouched(f));
+        if (hit && hit !== this.selectedFile) {
+          this.selectedFile = hit;
+          this.updateIframeSrc();
+        }
+      }),
+    );
+  }
   ngOnChanges(c: SimpleChanges): void {
     if (c['ucId'] && !c['ucId'].firstChange) { this.clearSubs(); this.load(); }
   }
