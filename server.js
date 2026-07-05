@@ -66,6 +66,21 @@ app.get('/api/file', async (req, res) => {
   }
 });
 
+app.put('/api/file', async (req, res) => {
+  const { root, path: filePath } = req.query;
+  const { content } = req.body || {};
+  if (!root || !filePath) return res.status(400).json({ error: 'root and path required' });
+  if (typeof content !== 'string') return res.status(400).json({ error: 'content (string) required' });
+  try {
+    const abs = safePath(root, filePath);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, content, 'utf-8');
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/mockup', async (req, res) => {
   const { root, path: filePath } = req.query;
   if (!root || !filePath) return res.status(400).json({ error: 'root and path required' });
@@ -82,6 +97,87 @@ app.get('/api/ping', (_req, res) => res.json({ ok: true }));
 
 app.get('/api/config', (_req, res) => {
   res.json({ standardUrl: process.env.STANDARD_URL || null });
+});
+
+// ── BR positions (app-owned layout for the Business Rule graph) ───────────────
+// Stored next to the architecture data so it travels with the target project,
+// but written/owned by the viewer so /uc-generate never clobbers it.
+
+app.get('/api/br-positions', async (req, res) => {
+  const { root } = req.query;
+  if (!root) return res.status(400).json({ error: 'root required' });
+  try {
+    const abs = safePath(root, 'br-positions.json');
+    const content = await fs.readFile(abs, 'utf-8');
+    res.json(JSON.parse(content));
+  } catch {
+    res.json({}); // no positions yet
+  }
+});
+
+app.put('/api/br-positions', async (req, res) => {
+  const { root } = req.query;
+  if (!root) return res.status(400).json({ error: 'root required' });
+  try {
+    const abs = safePath(root, 'br-positions.json');
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, JSON.stringify(req.body ?? {}, null, 2), 'utf-8');
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Resources (this repo's own methodology files: agents, commands, schemas) ──
+// A separate base from the target project; edited in-app and synced to project B.
+
+function resourcesBase() {
+  return path.resolve(__dirname, 'resources');
+}
+
+function safeResourcePath(filePath) {
+  const base = resourcesBase();
+  const resolved = path.resolve(base, filePath);
+  if (!resolved.startsWith(base + path.sep) && resolved !== base) {
+    throw new Error('Invalid path');
+  }
+  return resolved;
+}
+
+app.get('/api/resources/tree', async (_req, res) => {
+  try {
+    const tree = await buildTree(resourcesBase(), '');
+    res.json({ tree });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/resources/file', async (req, res) => {
+  const { path: filePath } = req.query;
+  if (!filePath) return res.status(400).json({ error: 'path required' });
+  try {
+    const abs = safeResourcePath(filePath);
+    const content = await fs.readFile(abs, 'utf-8');
+    res.type('text/plain').send(content);
+  } catch (err) {
+    res.status(404).json({ error: err.message });
+  }
+});
+
+app.put('/api/resources/file', async (req, res) => {
+  const { path: filePath } = req.query;
+  const { content } = req.body || {};
+  if (!filePath) return res.status(400).json({ error: 'path required' });
+  if (typeof content !== 'string') return res.status(400).json({ error: 'content (string) required' });
+  try {
+    const abs = safeResourcePath(filePath);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, content, 'utf-8');
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ── Layouts ──────────────────────────────────────────────────────────────────
