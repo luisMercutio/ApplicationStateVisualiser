@@ -112,8 +112,46 @@ all.forEach((r) => {
   r.deps = deps;
 });
 
+// ── Phase 2: per-BR architecture deltas via first-touch classification ────────
+// The FIRST rule (lowest seq) to touch an artifact `add`s it and owns it; any
+// later rule touching it `modify`s it. When a modify targets an artifact owned
+// by a *different* feature, that's a derived cross-feature change (the "handles
+// a change for feature 1 and 12" relationship) — never encoded in a name.
+const DELTA_KINDS = ['entities', 'endpoints', 'slices', 'components', 'selectors'];
+const ownerOf = {}; // `${kind}::${target}` -> { feature, slug }
+for (const r of all) { // `all` is in seq order
+  const delta = {};
+  const modifiesFeatures = new Set();
+  for (const kind of DELTA_KINDS) {
+    for (const t of r.touches[kind] ?? []) {
+      const key = `${kind}::${t}`;
+      const op = ownerOf[key] ? 'modify' : 'add';
+      if (op === 'add') ownerOf[key] = { feature: r.feature, slug: r.slug };
+      else if (ownerOf[key].feature !== r.feature) modifiesFeatures.add(ownerOf[key].feature);
+      ((delta[kind] ??= {})[op] ??= []).push(t);
+    }
+  }
+  r.delta = delta;
+  r.modifiesFeatures = [...modifiesFeatures];
+}
+
 // ── render a rule file ───────────────────────────────────────────────────────
 const yamlList = (arr) => `[${arr.join(', ')}]`;
+
+/** Render the delta as indented YAML for frontmatter (only non-empty parts). */
+function renderDeltaYaml(delta) {
+  const kinds = Object.keys(delta);
+  if (!kinds.length) return 'delta: {}';
+  const lines = ['delta:'];
+  for (const kind of kinds) {
+    lines.push(`  ${kind}:`);
+    for (const op of ['add', 'modify', 'remove']) {
+      const items = delta[kind][op];
+      if (items?.length) lines.push(`    ${op}: ${yamlList(items.map((s) => JSON.stringify(s)))}`);
+    }
+  }
+  return lines.join('\n');
+}
 
 const TOUCH_ROWS = [
   ['entities', 'entities'], ['endpoints', 'endpoints'], ['slices', 'slices'],
@@ -127,8 +165,10 @@ function renderRule(r) {
     `name: ${r.slug}`,
     `seq: "${r.newSeq}"`,
     `features: ${yamlList([r.feature])}`,
+    `modifiesFeatures: ${yamlList(r.modifiesFeatures)}`,
     `dependsOn: ${yamlList(deps)}`,
     `category: ${r.category}`,
+    renderDeltaYaml(r.delta),
     `legacyId: ${r.legacyId}`,
     `legacyUc: ${r.legacyUc}`,
     '---',
@@ -137,17 +177,23 @@ function renderRule(r) {
     '',
     r.rule,
     '',
-    '## Architecture anchors',
+    '## Delta',
     '',
-    '<!-- Phase-1 anchors carried over from the old `touches`. Phase 2 turns these',
-    '     into real add/modify/remove deltas that compose into the app state. -->',
+    '<!-- Provisional deltas from first-touch classification of the old `touches`.',
+    '     The br-synthesizer agent enriches these with field-level detail. -->',
   ];
-  const anchorLines = [];
+  const deltaLines = [];
   for (const [key, label] of TOUCH_ROWS) {
-    const items = r.touches[key] ?? [];
-    if (items.length) anchorLines.push(`- **${label}:** ${items.join(', ')}`);
+    if (key === 'mockups') continue;
+    const d = r.delta[key];
+    if (!d) continue;
+    if (d.add?.length) deltaLines.push(`- **+ ${label}:** ${d.add.join(', ')}`);
+    if (d.modify?.length) deltaLines.push(`- **~ ${label}:** ${d.modify.join(', ')}`);
   }
-  fm.push(anchorLines.length ? anchorLines.join('\n') : '_none captured_');
+  if (r.modifiesFeatures.length) {
+    deltaLines.push(`- **changes features:** ${r.modifiesFeatures.join(', ')}`);
+  }
+  fm.push(deltaLines.length ? deltaLines.join('\n') : '_no structural change (behavioural / constraint rule)_');
   fm.push('', '## Acceptance / tests', '');
   const tests = r.touches.tests ?? [];
   fm.push(tests.length ? tests.map((t) => `- ${t}`).join('\n') : '_none captured_');
@@ -171,8 +217,15 @@ for (const r of all) {
   written++;
 }
 
-// a short index/readme for the folder
+// machine-readable index (generated cache: the fold input + Phase-3 app cache)
 if (!dry) {
+  const index = all.map((r) => ({
+    name: r.slug, seq: r.newSeq, features: [r.feature],
+    modifiesFeatures: r.modifiesFeatures, dependsOn: r.deps, category: r.category,
+    delta: r.delta,
+  }));
+  fs.writeFileSync(path.join(rulesDir, '_index.json'), JSON.stringify(index, null, 2) + '\n', 'utf-8');
+
   const readme = [
     '# Business Rules', '',
     'Standalone Business Rule files — the atomic unit of the application spec.', '',
@@ -180,7 +233,12 @@ if (!dry) {
     '- **`seq`** = Dewey-decimal ordinal string; the sole source of build order.',
     '  Insert between `5` and `6` by writing `5.1`; between `5` and `5.1` by `5.05` — infinitely dense.',
     '- **`dependsOn`** = related rules by slug; context for development + graph edges, NOT ordering.',
-    '- **`features`** = the feature(s) a rule serves.', '',
+    '- **`features`** = the feature(s) a rule introduces into.',
+    '- **`delta`** = per-rule `add`/`modify`/`remove` per artifact kind. Composing every',
+    '  delta with `seq ≤ cut` yields the app state at that point (see `compose-state.mjs`).',
+    '- **`modifiesFeatures`** = features whose artifacts this rule changes (derived from `modify` targets).',
+    '- **`_index.json`** = generated cache of all frontmatter for fast folding; regenerate with `extract-brs.mjs`.',
+    '',
     `Generated by \`.claude/scripts/extract-brs.mjs\` from \`business-rules.json\`. ${all.length} rules, ${features.length} features.`,
     '',
   ].join('\n');
@@ -188,9 +246,13 @@ if (!dry) {
 }
 
 const edges = all.reduce((n, r) => n + (r.deps ?? []).length, 0);
+const adds = all.reduce((n, r) => n + DELTA_KINDS.reduce((m, k) => m + (r.delta[k]?.add?.length ?? 0), 0), 0);
+const mods = all.reduce((n, r) => n + DELTA_KINDS.reduce((m, k) => m + (r.delta[k]?.modify?.length ?? 0), 0), 0);
+const xfeat = all.reduce((n, r) => n + r.modifiesFeatures.length, 0);
 console.log(
-  `${dry ? 'Would write' : 'Wrote'} ${dry ? all.length : written} rule files + README to ${path.relative(root, rulesDir)}\n` +
-  `  ${all.length} rules · ${features.length} features · ${edges} dependsOn edges`,
+  `${dry ? 'Would write' : 'Wrote'} ${dry ? all.length : written} rule files + _index.json + README to ${path.relative(root, rulesDir)}\n` +
+  `  ${all.length} rules · ${features.length} features · ${edges} dependsOn edges\n` +
+  `  deltas: ${adds} adds · ${mods} modifies · ${xfeat} cross-feature changes`,
 );
 if (dry) {
   console.log('\nSample slugs (first 12):');

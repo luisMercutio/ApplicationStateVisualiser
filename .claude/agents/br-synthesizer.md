@@ -69,6 +69,24 @@ Write `<uc-folder>/business-rules.json` conforming to `.claude/schemas/business-
   - `entities` must match names in ClassDiagram.md; `endpoints` are `METHOD /path` from openapi.yaml; `slices` end in `Feature`; `components` end in `Component`; `selectors` come from selectors.yaml; `mockups` are real filenames under `mockups/`; `tests` are short descriptions of the rows under this BR's section in testState.md.
   - Leave an array empty rather than guessing.
 
+## Deltas (BR-first model)
+
+`touches` is the anchor set for cross-highlighting. The BR-first evolution reads
+the same information as a composable **delta** — what this rule *does* to the
+architecture — so the app state at any point can be folded from the rules with
+`seq ≤ cut` instead of read from a snapshot:
+
+- The **first** rule (lowest seq) to introduce an artifact **adds** it and owns it;
+  any later rule that changes it **modifies** it; a rule that drops it **removes** it.
+- Express deltas per artifact kind (`entities`, `endpoints`, `slices`, `components`,
+  `selectors`) as `{ add, modify, remove }`.
+- When a rule's `modify`/`remove` targets an artifact owned by a **different**
+  feature, that is a cross-feature change — surface it, but never encode it in a
+  filename; it is derived from the delta targets.
+
+Prefer field-level precision in modifies ("adds nullable `tourId` FK to `billing_part`")
+over bare names, so the fold reconstructs real structure.
+
 ## Hard rules
 
 - Do not invent BR ids. The set of rules is exactly the suggestion.md table.
