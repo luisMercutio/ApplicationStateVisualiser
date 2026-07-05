@@ -17,7 +17,8 @@ export type ViewType =
   | 'test-report-backend'
   | 'test-report-frontend'
   | 'resources'
-  | 'br-graph';
+  | 'br-graph'
+  | 'composed-state';
 
 export const VIEW_TYPE_LABELS: Record<ViewType, string> = {
   'uc-tracker': 'UC Tracker',
@@ -39,6 +40,7 @@ export const VIEW_TYPE_LABELS: Record<ViewType, string> = {
   'test-report-frontend': 'Frontend Report',
   'resources': 'Agents & Commands',
   'br-graph': 'BR Net',
+  'composed-state': 'Composed State',
 };
 
 export const VIEW_TYPE_LIST: ViewType[] = Object.keys(VIEW_TYPE_LABELS) as ViewType[];

@@ -103,6 +103,19 @@ app.get('/api/config', (_req, res) => {
 // Stored next to the architecture data so it travels with the target project,
 // but written/owned by the viewer so /uc-generate never clobbers it.
 
+// BR-first rule index (.claude/rules/_index.json) — the fold input for composed views.
+app.get('/api/rules', async (req, res) => {
+  const { root } = req.query;
+  if (!root) return res.status(400).json({ error: 'root required' });
+  try {
+    const abs = path.resolve(root, '.claude', 'rules', '_index.json');
+    const content = await fs.readFile(abs, 'utf-8');
+    res.json(JSON.parse(content));
+  } catch {
+    res.json([]); // no rules extracted yet
+  }
+});
+
 app.get('/api/br-positions', async (req, res) => {
   const { root } = req.query;
   if (!root) return res.status(400).json({ error: 'root required' });

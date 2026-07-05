@@ -5,6 +5,7 @@ import { map } from 'rxjs/operators';
 import { FileTreeNode } from '../models/uc.model';
 import { Panel } from '../models/panel.model';
 import { BrPosition } from '../models/business-rule.model';
+import { RuleEntry } from '../models/rule-index.model';
 
 const API_BASE = 'http://localhost:3001';
 
@@ -52,6 +53,12 @@ export class FileService {
   syncMethodology(target: string): Observable<{ count: number; copied: string[]; target: string }> {
     return this.http.post<{ count: number; copied: string[]; target: string }>(
       `${API_BASE}/api/sync-methodology`, { target });
+  }
+
+  // ── BR-first rule index (.claude/rules/_index.json) ──
+  getRulesIndex(root: string): Observable<RuleEntry[]> {
+    const params = new HttpParams().set('root', root);
+    return this.http.get<RuleEntry[]>(`${API_BASE}/api/rules`, { params });
   }
 
   // ── Business Rule node positions (app-owned layout) ──
