@@ -144,6 +144,38 @@ function safeResourcePath(filePath) {
   return resolved;
 }
 
+async function copyDir(src, dest, rel = '') {
+  await fs.mkdir(dest, { recursive: true });
+  const entries = await fs.readdir(src, { withFileTypes: true });
+  const out = [];
+  for (const e of entries) {
+    const s = path.join(src, e.name);
+    const d = path.join(dest, e.name);
+    const r = rel ? `${rel}/${e.name}` : e.name;
+    if (e.isDirectory()) out.push(...await copyDir(s, d, r));
+    else { await fs.copyFile(s, d); out.push(r); }
+  }
+  return out;
+}
+
+// Push the methodology (agents + commands) into a target project's .claude/.
+app.post('/api/sync-methodology', async (req, res) => {
+  const { target } = req.body || {};
+  if (!target) return res.status(400).json({ error: 'target required' });
+  try {
+    const stat = await fs.stat(target);
+    if (!stat.isDirectory()) return res.status(400).json({ error: 'target is not a directory' });
+    const claudeDir = path.resolve(target, '.claude');
+    const copied = [];
+    for (const sub of ['agents', 'commands']) {
+      copied.push(...await copyDir(path.join(resourcesBase(), sub), path.join(claudeDir, sub), sub));
+    }
+    res.json({ ok: true, target, count: copied.length, copied });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/resources/tree', async (_req, res) => {
   try {
     const tree = await buildTree(resourcesBase(), '');

@@ -5,10 +5,14 @@ import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { MatTooltipModule } from '@angular/material/tooltip';
-import { Subscription } from 'rxjs';
+import { MatDialog } from '@angular/material/dialog';
+import { Subscription, take } from 'rxjs';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { FileTreeNode } from '../../../models/uc.model';
+import { FileService } from '../../../services/file.service';
+import { selectRootPath } from '../../../store/layout/layout.selectors';
+import { SyncMethodologyDialogComponent } from '../../sync-methodology-dialog/sync-methodology-dialog.component';
 import { ResourcesActions } from '../../../store/resources/resources.actions';
 import {
   selectResourcesTree,
@@ -36,8 +40,12 @@ interface FlatNode {
       <div class="res-tree">
         <div class="tree-head">
           <span>Methodology</span>
-          <button mat-icon-button class="sm" (click)="reload()" matTooltip="Reload"><mat-icon>refresh</mat-icon></button>
+          <span class="th-actions">
+            <button mat-icon-button class="sm" (click)="openSync()" matTooltip="Sync agents + commands to a project"><mat-icon>drive_file_move</mat-icon></button>
+            <button mat-icon-button class="sm" (click)="reload()" matTooltip="Reload"><mat-icon>refresh</mat-icon></button>
+          </span>
         </div>
+        @if (syncStatus()) { <div class="sync-status">{{ syncStatus() }}</div> }
         @for (n of flat(); track n.path) {
           @if (n.type === 'directory') {
             <div class="tree-dir" [style.paddingLeft.px]="8 + n.depth * 12">
@@ -89,7 +97,9 @@ interface FlatNode {
   styles: [`
     .res-wrap { display: flex; height: 100%; }
     .res-tree { width: 230px; flex-shrink: 0; border-right: 1px solid #e0e0e0; overflow-y: auto; background: #fafafa; font-size: 13px; }
-    .tree-head { display: flex; align-items: center; justify-content: space-between; padding: 6px 4px 6px 10px; font-weight: 600; color: #555; position: sticky; top: 0; background: #fafafa; border-bottom: 1px solid #eee; }
+    .tree-head { display: flex; align-items: center; justify-content: space-between; padding: 6px 4px 6px 10px; font-weight: 600; color: #555; position: sticky; top: 0; background: #fafafa; border-bottom: 1px solid #eee; z-index: 1; }
+    .th-actions { display: flex; }
+    .sync-status { font-size: 11px; padding: 4px 10px; background: #e8f5e9; color: #2e7d32; border-bottom: 1px solid #eee; }
     .tree-dir { display: flex; align-items: center; gap: 6px; padding: 5px 8px; color: #777; font-weight: 600; }
     .tree-file { display: flex; align-items: center; gap: 6px; padding: 4px 8px; cursor: pointer; color: #333; }
     .tree-file:hover { background: #eceff1; }
@@ -116,8 +126,11 @@ interface FlatNode {
 export class ResourcesEditorComponent implements OnInit, OnDestroy {
   private store = inject(Store);
   private sanitizer = inject(DomSanitizer);
+  private fileService = inject(FileService);
+  private dialog = inject(MatDialog);
   private subs: Subscription[] = [];
   private pathSubs: Subscription[] = [];
+  syncStatus = signal<string | null>(null);
 
   flat = signal<FlatNode[]>([]);
   selectedPath = signal<string | null>(null);
@@ -155,6 +168,20 @@ export class ResourcesEditorComponent implements OnInit, OnDestroy {
 
   reload(): void {
     this.store.dispatch(ResourcesActions.loadTree());
+  }
+
+  openSync(): void {
+    this.store.select(selectRootPath).pipe(take(1)).subscribe((root) => {
+      const ref = this.dialog.open(SyncMethodologyDialogComponent, { data: root ?? '' });
+      ref.afterClosed().subscribe((target: string | undefined) => {
+        if (!target) return;
+        this.syncStatus.set(`Syncing to ${target}…`);
+        this.fileService.syncMethodology(target).subscribe({
+          next: (r) => this.syncStatus.set(`✓ Copied ${r.count} files into ${target}\\.claude`),
+          error: (e) => this.syncStatus.set(`✗ ${e.error?.error ?? e.message ?? 'Sync failed'}`),
+        });
+      });
+    });
   }
 
   onEdit(value: string): void {

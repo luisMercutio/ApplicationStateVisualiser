@@ -49,6 +49,11 @@ export class FileService {
     return this.http.put<void>(`${API_BASE}/api/resources/file`, { content }, { params });
   }
 
+  syncMethodology(target: string): Observable<{ count: number; copied: string[]; target: string }> {
+    return this.http.post<{ count: number; copied: string[]; target: string }>(
+      `${API_BASE}/api/sync-methodology`, { target });
+  }
+
   // ── Business Rule node positions (app-owned layout) ──
   getBrPositions(root: string): Observable<Record<string, BrPosition>> {
     const params = new HttpParams().set('root', root);
