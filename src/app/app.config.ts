@@ -14,6 +14,8 @@ import { layoutsFeature } from './store/layouts/layouts.reducer';
 import { LayoutsEffects } from './store/layouts/layouts.effects';
 import { resourcesFeature } from './store/resources/resources.reducer';
 import { ResourcesEffects } from './store/resources/resources.effects';
+import { brFeature } from './store/br/br.reducer';
+import { BrEffects } from './store/br/br.effects';
 
 export const appConfig: ApplicationConfig = {
   providers: [
@@ -26,8 +28,9 @@ export const appConfig: ApplicationConfig = {
       [filesFeature.name]: filesFeature.reducer,
       [layoutsFeature.name]: layoutsFeature.reducer,
       [resourcesFeature.name]: resourcesFeature.reducer,
+      [brFeature.name]: brFeature.reducer,
     }),
-    provideEffects([LayoutEffects, UcEffects, FilesEffects, LayoutsEffects, ResourcesEffects]),
+    provideEffects([LayoutEffects, UcEffects, FilesEffects, LayoutsEffects, ResourcesEffects, BrEffects]),
     provideStoreDevtools({ maxAge: 25, logOnly: !isDevMode() }),
   ],
 };

@@ -4,6 +4,7 @@ import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
 import { FileTreeNode } from '../models/uc.model';
 import { Panel } from '../models/panel.model';
+import { BrPosition } from '../models/business-rule.model';
 
 const API_BASE = 'http://localhost:3001';
 
@@ -46,6 +47,17 @@ export class FileService {
   saveResourceFile(filePath: string, content: string): Observable<void> {
     const params = new HttpParams().set('path', filePath);
     return this.http.put<void>(`${API_BASE}/api/resources/file`, { content }, { params });
+  }
+
+  // ── Business Rule node positions (app-owned layout) ──
+  getBrPositions(root: string): Observable<Record<string, BrPosition>> {
+    const params = new HttpParams().set('root', root);
+    return this.http.get<Record<string, BrPosition>>(`${API_BASE}/api/br-positions`, { params });
+  }
+
+  saveBrPositions(root: string, positions: Record<string, BrPosition>): Observable<void> {
+    const params = new HttpParams().set('root', root);
+    return this.http.put<void>(`${API_BASE}/api/br-positions`, positions, { params });
   }
 
   ping(): Observable<{ ok: boolean }> {

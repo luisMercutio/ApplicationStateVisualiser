@@ -21,6 +21,7 @@ import { ContractValidationComponent } from '../views/contract-validation/contra
 import { MockupViewComponent } from '../views/mockup-view/mockup-view.component';
 import { TestReportComponent } from '../views/test-report/test-report.component';
 import { ResourcesEditorComponent } from '../views/resources-editor/resources-editor.component';
+import { BrGraphComponent } from '../views/br-graph/br-graph.component';
 
 const FILE_MAP: Record<ViewType, ((id: string) => string) | string> = {
   'uc-tracker': 'usecases.md',
@@ -41,6 +42,7 @@ const FILE_MAP: Record<ViewType, ((id: string) => string) | string> = {
   'test-report-backend': id => `${id}/test-report-backend.md`,
   'test-report-frontend': id => `${id}/test-report-frontend.md`,
   'resources': '',
+  'br-graph': '',
 };
 
 const DIFF_VIEWS: ViewType[] = ['class-diagram-diff', 'openapi-diff', 'frontend-state-diff', 'selectors-diff', 'test-state-diff', 'mockups-diff'];
@@ -54,7 +56,7 @@ const MERMAID_VIEWS: ViewType[] = ['class-diagram', 'frontend-state'];
     UcTrackerComponent, SuggestionComponent, MermaidViewComponent, DiffViewComponent,
     OpenApiViewComponent, SelectorsViewComponent, TestStateComponent,
     ContractValidationComponent, MockupViewComponent, TestReportComponent,
-    ResourcesEditorComponent,
+    ResourcesEditorComponent, BrGraphComponent,
   ],
   template: `
     <div class="panel-wrapper">
@@ -115,6 +117,7 @@ const MERMAID_VIEWS: ViewType[] = ['class-diagram', 'frontend-state'];
           @case ('test-report-backend') { <app-test-report [filePath]="filePath()"></app-test-report> }
           @case ('test-report-frontend') { <app-test-report [filePath]="filePath()"></app-test-report> }
           @case ('resources') { <app-resources-editor></app-resources-editor> }
+          @case ('br-graph') { <app-br-graph></app-br-graph> }
         }
       </div>
     </div>
