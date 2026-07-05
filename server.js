@@ -128,15 +128,19 @@ app.put('/api/br-positions', async (req, res) => {
   }
 });
 
-// ── Resources (this repo's own methodology files: agents, commands, schemas) ──
-// A separate base from the target project; edited in-app and synced to project B.
+// ── Methodology (this repo's own .claude dir: agents, commands, schemas, scripts) ──
+// The .claude dir IS the single source of truth: Claude Code auto-discovers it,
+// and the app serves the very same files (no copies, no build step). Override the
+// location with CLAUDE_DIR if needed. Endpoints stay named /api/resources/* for
+// backwards compatibility with saved layouts.
+const METHODOLOGY_HIDE = new Set(['settings.local.json']);
 
-function resourcesBase() {
-  return path.resolve(__dirname, 'resources');
+function claudeBase() {
+  return path.resolve(__dirname, process.env.CLAUDE_DIR || '.claude');
 }
 
 function safeResourcePath(filePath) {
-  const base = resourcesBase();
+  const base = claudeBase();
   const resolved = path.resolve(base, filePath);
   if (!resolved.startsWith(base + path.sep) && resolved !== base) {
     throw new Error('Invalid path');
@@ -168,7 +172,7 @@ app.post('/api/sync-methodology', async (req, res) => {
     const claudeDir = path.resolve(target, '.claude');
     const copied = [];
     for (const sub of ['agents', 'commands']) {
-      copied.push(...await copyDir(path.join(resourcesBase(), sub), path.join(claudeDir, sub), sub));
+      copied.push(...await copyDir(path.join(claudeBase(), sub), path.join(claudeDir, sub), sub));
     }
     res.json({ ok: true, target, count: copied.length, copied });
   } catch (err) {
@@ -178,7 +182,7 @@ app.post('/api/sync-methodology', async (req, res) => {
 
 app.get('/api/resources/tree', async (_req, res) => {
   try {
-    const tree = await buildTree(resourcesBase(), '');
+    const tree = (await buildTree(claudeBase(), '')).filter((n) => !METHODOLOGY_HIDE.has(n.name));
     res.json({ tree });
   } catch (err) {
     res.status(500).json({ error: err.message });

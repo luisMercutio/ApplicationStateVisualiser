@@ -12,7 +12,7 @@ import { FormsModule } from '@angular/forms';
   template: `
     <h2 mat-dialog-title>Sync methodology to a project</h2>
     <mat-dialog-content>
-      <p class="blurb">Copies <code>resources/agents</code> and <code>resources/commands</code> into
+      <p class="blurb">Copies <code>.claude/agents</code> and <code>.claude/commands</code> into
         <code>&lt;target&gt;/.claude/</code>, overwriting existing files of the same name.</p>
       <mat-form-field appearance="outline" class="path-field">
         <mat-label>Target project folder</mat-label>

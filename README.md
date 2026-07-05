@@ -5,7 +5,7 @@ An interactive dashboard for **watching an application get designed and built by
 It has two jobs:
 
 1. **Visualise** the design artifacts a target project generates under `.claude/architecture/` — use cases, class diagrams, API contracts, frontend state, mockups, tests, and the **Business Rule dependency net**.
-2. **Own the methodology.** The Claude Code agents and slash commands that drive development live here in [`resources/`](resources/), are edited here, and are **synced out** to the projects they build. Keeping them here means the methodology is versioned alongside the tool that shows what it produces.
+2. **Own the methodology.** The Claude Code agents and slash commands that drive development live here in [`.claude/`](.claude/) — auto-discovered by Claude Code, edited in-app, and **synced out** to the projects they build. Keeping them here means the methodology is versioned alongside the tool that shows what it produces.
 
 > Internal package name: `uc-arch-viewer`.
 
@@ -38,10 +38,10 @@ Express server.js (:3001)
    │  reads/writes
    ▼
 <targetProject>/.claude/architecture/**      ← the artifacts to visualise
-<thisRepo>/resources/**                       ← the methodology (agents, commands, schemas)
+<thisRepo>/.claude/{agents,commands,schemas,scripts}  ← the methodology
 ```
 
-- **`server.js`** — a small read/write file API. Reads are sandboxed to `<root>/.claude/architecture` (or this repo's `resources/`); writes are guarded the same way. Endpoints: `GET/PUT /api/file`, `GET /api/tree`, `GET /api/mockup`, `GET/PUT /api/br-positions`, `GET /api/resources/tree`, `GET/PUT /api/resources/file`, `POST /api/sync-methodology`, and layout CRUD under `/api/layouts`.
+- **`server.js`** — a small read/write file API. Reads are sandboxed to `<root>/.claude/architecture` (or this repo's own `.claude/`); writes are guarded the same way. Endpoints: `GET/PUT /api/file`, `GET /api/tree`, `GET /api/mockup`, `GET/PUT /api/br-positions`, `GET /api/resources/tree`, `GET/PUT /api/resources/file`, `POST /api/sync-methodology`, and layout CRUD under `/api/layouts`.
 - **Angular app** — a grid of draggable [gridster] panels, each rendering one artifact for the currently selected Use Case. State is NgRx (`layout`, `uc`, `files`, `layouts`, `resources`, `br`). The active project root and panel layout persist in `localStorage`; named layouts persist server-side under `layouts/`.
 
 ### Panels / views
@@ -56,7 +56,7 @@ Express server.js (:3001)
 | **Mockup** | `mockups/*.html` in a sandboxed iframe |
 | **Diffs** | per-UC delta views (DB, API, store, selectors, tests, mockups) |
 | **BR Net** | the **Business Rule dependency graph** (see below) |
-| **Agents & Commands** | browse + edit the methodology files in `resources/`, and sync them to a project |
+| **Agents & Commands** | browse + edit the methodology files in `.claude/`, and sync them to a project |
 
 ### The Business Rule net
 
@@ -71,7 +71,7 @@ The **BR Net** panel renders these as a graph — earliest / most-foundational r
 Node coordinates are auto-computed, then **persisted separately** in `br-positions.json` (owned by the viewer), so re-running `/uc-generate` never clobbers hand-tuned layout. Seed data for a project with none can be generated deterministically:
 
 ```bash
-node resources/scripts/backfill-business-rules.mjs --root "C:/path/to/projectB"
+node .claude/scripts/backfill-business-rules.mjs --root "C:/path/to/projectB"
 ```
 
 ---
@@ -86,11 +86,11 @@ This is the part that actually builds applications. It is spec-first: a feature 
 - **Change Request loop** — fix a bug and feed the lesson back into the agents: `/cr-start` → `/cr-capture` → `/cr-propagate` → `/cr-clean`.
 - **Work Queue** — batch loose tasks through, some in parallel: `/queue-add` → `/queue-refine` → `/queue-plan` → `/queue-run` → `/queue-judge`.
 
-**Agents** (in [`resources/agents/`](resources/agents/)) do the specialised work: `backend-architect` / `frontend-architect` (design), `contract-validator` (API↔frontend contract), `br-synthesizer` (Business Rule data), `postman-builder`, `backend-developer` / `frontend-developer` (code), `backend-tester` / `frontend-tester` (tests), `obsidian-scribe` (docs).
+**Agents** (in [`.claude/agents/`](.claude/agents/)) do the specialised work: `backend-architect` / `frontend-architect` (design), `contract-validator` (API↔frontend contract), `br-synthesizer` (Business Rule data), `postman-builder`, `backend-developer` / `frontend-developer` (code), `backend-tester` / `frontend-tester` (tests), `obsidian-scribe` (docs).
 
 ### `/flows` — the built-in guide
 
-Don't memorise the above. Run **`/flows`** in Claude Code for a short overview, then pick a workflow to go deep on when each is used and exactly what it changes. `/flows <topic>` (e.g. `/flows queue`, `/flows uc-generate`) jumps straight in. See also [`resources/CHEATSHEET.md`](resources/CHEATSHEET.md).
+Don't memorise the above. Run **`/flows`** in Claude Code for a short overview, then pick a workflow to go deep on when each is used and exactly what it changes. `/flows <topic>` (e.g. `/flows queue`, `/flows uc-generate`) jumps straight in. See also [`.claude/CHEATSHEET.md`](.claude/CHEATSHEET.md).
 
 ---
 
@@ -98,7 +98,7 @@ Don't memorise the above. Run **`/flows`** in Claude Code for a short overview, 
 
 Claude Code only auto-discovers agents/commands from a project's own `.claude/` (or `~/.claude/`). It will **not** read them from a sibling repo. So this repo is the canonical source, and you push it out:
 
-- **In-app:** open the **Agents & Commands** panel → the sync button → enter the target project folder. It copies `resources/agents` + `resources/commands` into `<target>/.claude/`.
+- **In-app:** open the **Agents & Commands** panel → the sync button → enter the target project folder. It copies `.claude/agents` + `.claude/commands` into `<target>/.claude/`.
 - **API:** `POST /api/sync-methodology { "target": "C:/path/to/projectB" }`.
 
 Edit the agents/commands **here**, then re-sync. (Two files are local forks maintained on top of upstream: `commands/uc-generate.md` adds the `br-synthesizer` step, and `agents/br-synthesizer.md` is new — preserve both when re-importing from an upstream project.)
@@ -108,9 +108,9 @@ Edit the agents/commands **here**, then re-sync. (Two files are local forks main
 ## Repo layout
 
 ```
-server.js                     Express file/layout/resources/sync API (:3001)
+server.js                     Express file / layout / methodology / sync API (:3001)
 layouts/                      saved panel layouts (JSON)
-resources/                    ← the methodology (ground truth)
+.claude/                      ← the methodology (ground truth; auto-discovered by Claude Code)
   agents/                       Claude Code sub-agents
   commands/                     slash commands (uc-*, cr-*, queue-*, flows)
   schemas/                      JSON Schemas (business-rules.schema.json)

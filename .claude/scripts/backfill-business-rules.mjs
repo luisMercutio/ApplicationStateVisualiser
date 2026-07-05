@@ -11,7 +11,7 @@
  * /uc-generate keeps these files fresh (and can enrich dependsOn/touches
  * beyond what pure parsing can infer).
  *
- * Output conforms to resources/schemas/business-rules.schema.json.
+ * Output conforms to .claude/schemas/business-rules.schema.json.
  * It never writes node coordinates — the viewer owns br-positions.json.
  *
  * Usage:

@@ -1,6 +1,6 @@
 ---
 name: br-synthesizer
-description: Business Rule data specialist. MUST BE USED by /uc-generate after the architecture artifacts and testState.md exist. Reads a UC's suggestion.md, diffs, ComponentInventory.md, mockups, and testState.md and emits a structured business-rules.json (conforming to resources/schemas/business-rules.schema.json) that turns each Business Rule into a first-class entity with prerequisite dependency edges and cross-artifact "touches" anchors. Does NOT write application source code.
+description: Business Rule data specialist. MUST BE USED by /uc-generate after the architecture artifacts and testState.md exist. Reads a UC's suggestion.md, diffs, ComponentInventory.md, mockups, and testState.md and emits a structured business-rules.json (conforming to .claude/schemas/business-rules.schema.json) that turns each Business Rule into a first-class entity with prerequisite dependency edges and cross-artifact "touches" anchors. Does NOT write application source code.
 tools: Read, Write, Glob, Grep
 model: inherit
 ---
@@ -29,7 +29,7 @@ You are invoked with explicit paths to the current UC folder (`<uc-folder>`) and
 
 ## Output
 
-Write `<uc-folder>/business-rules.json` conforming to `resources/schemas/business-rules.schema.json`:
+Write `<uc-folder>/business-rules.json` conforming to `.claude/schemas/business-rules.schema.json`:
 
 ```json
 {
