@@ -226,6 +226,31 @@ After writing `testState.md`, delete `testState-backend.md` and `testState-front
 
 ---
 
+## Step 6.5 — Synthesize structured Business Rules
+
+Spawn the `br-synthesizer` agent with the following prompt (fill in actual resolved paths):
+
+```
+Business Rule Data Mode for $ARGUMENTS.
+
+UC folder:            <uc-folder>/
+Suggestion:           <uc-folder>/suggestion.md
+ClassDiagram:         <uc-folder>/ClassDiagram.md
+openapi:              <uc-folder>/openapi.yaml
+FrontendState:        <uc-folder>/FrontendState.md
+selectors:            <uc-folder>/selectors.yaml
+ComponentInventory:   <uc-folder>/ComponentInventory.md
+Mockups:              <uc-folder>/mockups/
+testState:            <uc-folder>/testState.md
+Predecessor BR data:  .claude/architecture/*/business-rules.json  (all lower-numbered UCs)
+
+Write: <uc-folder>/business-rules.json
+```
+
+Wait for the br-synthesizer to complete. This file is what the ApplicationStateVisualiser reads to render the Business Rule dependency net. Do **not** write node coordinates — the viewer owns `br-positions.json`.
+
+---
+
 ## Step 7 — Handle contract validation result
 
 Read `<uc-folder>/contract-validation.json`.
@@ -264,7 +289,7 @@ Read `.claude/architecture/usecases.md`. Upsert the row for $ARGUMENTS:
 ## Step 9 — Report to the user
 
 Summarise:
-- Artifacts generated (list files, including any touch.md files created under `<uc-folder>/NNN/`)
+- Artifacts generated (list files, including `business-rules.json` and any touch.md files created under `<uc-folder>/NNN/`)
 - Postman files updated (`postman/campmanager-collection.json`, `postman/campmanager-environment.json`)
 - Contract validation result + any warnings
 - Any errors that must be resolved
