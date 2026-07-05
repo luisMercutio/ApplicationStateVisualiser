@@ -29,6 +29,25 @@ export class FileService {
     return `${API_BASE}/api/mockup?root=${encodeURIComponent(root)}&path=${encodeURIComponent(filePath)}`;
   }
 
+  // ── Resources (methodology files in this repo: agents, commands, schemas) ──
+  getResourcesTree(): Observable<{ tree: FileTreeNode[] }> {
+    return this.http.get<{ tree: FileTreeNode[] }>(`${API_BASE}/api/resources/tree`);
+  }
+
+  getResourceFile(filePath: string): Observable<string> {
+    const params = new HttpParams().set('path', filePath);
+    return this.http.get(`${API_BASE}/api/resources/file`, {
+      params,
+      responseType: 'text',
+      headers: { 'Cache-Control': 'no-cache' },
+    });
+  }
+
+  saveResourceFile(filePath: string, content: string): Observable<void> {
+    const params = new HttpParams().set('path', filePath);
+    return this.http.put<void>(`${API_BASE}/api/resources/file`, { content }, { params });
+  }
+
   ping(): Observable<{ ok: boolean }> {
     return this.http.get<{ ok: boolean }>(`${API_BASE}/api/ping`);
   }
