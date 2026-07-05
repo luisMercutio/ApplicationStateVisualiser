@@ -274,3 +274,6 @@ Set `Status` to `NEEDS_FIX` if any test fails, any test is missing (excluding pe
   no navigation to /login; (2) expired/invalid stored refresh token — tokens cleared, no crash;
   (3) no stored refresh token — no refresh call made, AuthGuard handles routing.
   _(source: CR-clean-up-login-prompt-when-refresh-token-already-exists)_
+- For any feature page, assert it does NOT render application-level nav / brand / logout chrome
+  (those belong to the global header); only page-scoped toolbars should be present.
+  _(source: CR-strip-duplicate-page-navbars)_

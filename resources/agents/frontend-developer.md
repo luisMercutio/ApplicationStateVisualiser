@@ -196,3 +196,7 @@ If the UC artifacts contain an instruction you cannot interpret unambiguously, s
 - `*ngIf`, `*ngFor`, and `*ngSwitch` are forbidden — use `@if`, `@for`, and `@switch`.
 - Plain HTML form/interactive elements (`<input>`, `<button>`, `<table>`, `<select>`, `<dialog>`) are forbidden when an Angular Material equivalent exists. The old app's use of plain elements is not a justification — the Material mandate overrides the visual reference in all cases.
 - Component file placement must match the source path in `ComponentInventory.md`.
+- Never implement an application-level navbar/toolbar carrying global nav links, brand, or signed-in
+  identity in a feature page; bind to the global `<app-header>`. A page-local `mat-toolbar` is
+  permitted only for page-scoped actions (e.g. a back button or page title).
+  _(source: CR-strip-duplicate-page-navbars)_

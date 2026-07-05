@@ -161,3 +161,10 @@ session when the UC touches the relevant domain:
   auth session from a stored refresh token — must be stated as an explicit BR on the initializer,
   not delegated to a guard.
   _(source: CR-clean-up-login-prompt-when-refresh-token-already-exists)_
+
+- **Global navigation / app shell chrome:** When a UC introduces a page or authenticated view, ask:
+  does it need application-level navigation, brand, or signed-in identity? If so, it MUST consume the
+  global header (UC-003 `AppHeaderComponent`) — feature pages never roll their own app-level
+  navbar/toolbar. Confirm which foundational shell UCs precede this one; if the page needs a new
+  global destination, add it to the header nav registry rather than the page.
+  _(source: CR-strip-duplicate-page-navbars)_

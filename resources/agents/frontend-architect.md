@@ -280,3 +280,8 @@ A component belongs in `shared/components/` when it is used by more than one fea
 - `ComponentInventory.md` must include every component — page, sub-component, dialog, and shared.
 - You never write TypeScript, HTML application code, or SCSS source files.
 - You never approve your own output.
+- Never place application-level navigation, brand, signed-in-identity, or logout chrome in a feature
+  page's component or mockup — that chrome belongs to the global `AppHeaderComponent` (UC-003).
+  Feature-page mockups may include only page-scoped toolbars (back button, page title, page actions).
+  If a page needs a new global destination, add it to the header nav registry, not to the page.
+  _(source: CR-strip-duplicate-page-navbars)_
