@@ -9,15 +9,23 @@ export interface RuleDeltaOps {
 }
 export type RuleDelta = Record<string, RuleDeltaOps>;
 
+export interface RuleTouches {
+  entities?: string[]; endpoints?: string[]; slices?: string[];
+  selectors?: string[]; components?: string[]; mockups?: string[]; tests?: string[];
+}
+
 export interface RuleEntry {
   name: string;
   seq: string;            // Dewey-decimal ordinal string, the sole order source
+  rule: string;           // the rule statement (node label + drawer)
   features: string[];
   modifiesFeatures: string[];
   dependsOn: string[];    // context only (by slug)
   category: string;
   delta: RuleDelta;
+  touches?: RuleTouches;  // anchors for cross-panel highlighting
   legacyUc?: string;      // provenance — lets the BR Net (keyed by UC) drive the feature cut
+  legacyId?: string;      // provenance — joins to legacy testState.md sections
 }
 
 export const DELTA_KINDS = ['entities', 'endpoints', 'slices', 'components', 'selectors'] as const;

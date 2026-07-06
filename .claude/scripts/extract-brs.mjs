@@ -220,9 +220,9 @@ for (const r of all) {
 // machine-readable index (generated cache: the fold input + Phase-3 app cache)
 if (!dry) {
   const index = all.map((r) => ({
-    name: r.slug, seq: r.newSeq, features: [r.feature],
+    name: r.slug, seq: r.newSeq, rule: r.rule, features: [r.feature],
     modifiesFeatures: r.modifiesFeatures, dependsOn: r.deps, category: r.category,
-    delta: r.delta, legacyUc: r.legacyUc,
+    delta: r.delta, touches: r.touches, legacyUc: r.legacyUc, legacyId: r.legacyId,
   }));
   fs.writeFileSync(path.join(rulesDir, '_index.json'), JSON.stringify(index, null, 2) + '\n', 'utf-8');
 
