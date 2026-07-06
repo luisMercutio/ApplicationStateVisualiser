@@ -222,7 +222,7 @@ if (!dry) {
   const index = all.map((r) => ({
     name: r.slug, seq: r.newSeq, features: [r.feature],
     modifiesFeatures: r.modifiesFeatures, dependsOn: r.deps, category: r.category,
-    delta: r.delta,
+    delta: r.delta, legacyUc: r.legacyUc,
   }));
   fs.writeFileSync(path.join(rulesDir, '_index.json'), JSON.stringify(index, null, 2) + '\n', 'utf-8');
 

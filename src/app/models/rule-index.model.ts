@@ -17,6 +17,7 @@ export interface RuleEntry {
   dependsOn: string[];    // context only (by slug)
   category: string;
   delta: RuleDelta;
+  legacyUc?: string;      // provenance — lets the BR Net (keyed by UC) drive the feature cut
 }
 
 export const DELTA_KINDS = ['entities', 'endpoints', 'slices', 'components', 'selectors'] as const;

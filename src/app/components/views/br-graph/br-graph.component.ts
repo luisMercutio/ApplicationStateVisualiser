@@ -12,6 +12,8 @@ import {
   selectBrRules, selectBrPositions, selectBrEdges, selectBrLoading, selectBrError,
   selectSelectedBrId, selectConnectedBrIds, selectBrById,
 } from '../../../store/br/br.selectors';
+import { RulesActions } from '../../../store/rules/rules.actions';
+import { selectUcToFeature } from '../../../store/rules/rules.selectors';
 
 const NODE_W = 210;
 const NODE_H = 66;
@@ -226,6 +228,7 @@ export class BrGraphComponent implements OnInit, OnDestroy {
   error = signal<string | null>(null);
   zoom = signal(1);
   focusKey = signal<keyof BrTouches | null>(null);
+  private ucToFeature: Record<string, string> = {};
 
   private dragId: string | null = null;
   private dragMoved = false;
@@ -277,7 +280,9 @@ export class BrGraphComponent implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     this.store.dispatch(BrActions.loadGraph());
+    this.store.dispatch(RulesActions.loadRules()); // for the UC→feature mapping
     this.subs.push(
+      this.store.select(selectUcToFeature).subscribe((m) => (this.ucToFeature = m)),
       this.store.select(selectBrRules).subscribe((r) => this.rules.set(r)),
       this.store.select(selectBrEdges).subscribe((e) => this.edges.set(e)),
       this.store.select(selectBrById).subscribe((m) => this.byId.set(m)),
@@ -307,15 +312,19 @@ export class BrGraphComponent implements OnInit, OnDestroy {
     return this.connected().has(e.from) && this.connected().has(e.to);
   }
 
-  /** Selecting a rule also broadcasts its touches so the other panels light up. */
+  /** Selecting a rule broadcasts its touches (so panels light up) and sets the
+   * Active Feature cut (so the Composed State folds to this rule's feature). */
   select(id: string | null): void {
     this.store.dispatch(BrActions.selectBr({ id }));
     this.focusKey.set(null);
     if (id) {
       const r = this.byId()[id];
       if (r) this.store.dispatch(BrActions.setHighlight({ highlight: { brId: id, kind: 'connections', touches: r.touches ?? {} } }));
+      const feature = r ? (this.ucToFeature[r.uc] ?? null) : null;
+      this.store.dispatch(RulesActions.setActiveFeature({ feature }));
     } else {
       this.store.dispatch(BrActions.clearHighlight());
+      this.store.dispatch(RulesActions.setActiveFeature({ feature: null })); // whole application
     }
   }
 
