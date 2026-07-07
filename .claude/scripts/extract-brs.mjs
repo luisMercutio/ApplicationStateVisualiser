@@ -85,7 +85,6 @@ for (const folder of ucFolders) {
 
 // ── assign identity (slug) + Dewey seq, then resolve dependsOn ───────────────
 const usedSlugs = new Set();
-const occ = new Map(); // legacyId -> [{ gi, feature, slug }] in order
 all.forEach((r, i) => {
   let base = ruleSlug(r.rule);
   let slug = base, n = 2;
@@ -94,45 +93,39 @@ all.forEach((r, i) => {
   r.slug = slug;
   r.gi = i;
   r.newSeq = String(i + 1);        // clean contiguous baseline; Dewey sub-segments appear on later inserts
-  if (!occ.has(r.legacyId)) occ.set(r.legacyId, []);
-  occ.get(r.legacyId).push({ gi: i, feature: r.feature, slug });
-});
-// dependsOn ids aren't globally unique → pick the nearest EARLIER occurrence,
-// preferring the same feature. Provisional (the old edges were themselves
-// derived); real edges get authored/re-synthesized in Phase 2.
-all.forEach((r) => {
-  const deps = [];
-  for (const depId of r.dependsOn ?? []) {
-    const cands = (occ.get(depId) ?? []).filter((o) => o.gi < r.gi);
-    if (!cands.length) continue;
-    const sameFeat = cands.filter((o) => o.feature === r.feature);
-    const pick = (sameFeat.length ? sameFeat : cands).reduce((a, b) => (b.gi > a.gi ? b : a));
-    if (pick.slug !== r.slug && !deps.includes(pick.slug)) deps.push(pick.slug);
-  }
-  r.deps = deps;
 });
 
-// ── Phase 2: per-BR architecture deltas via first-touch classification ────────
-// The FIRST rule (lowest seq) to touch an artifact `add`s it and owns it; any
-// later rule touching it `modify`s it. When a modify targets an artifact owned
-// by a *different* feature, that's a derived cross-feature change (the "handles
-// a change for feature 1 and 12" relationship) — never encoded in a name.
+// ── Phase 2: per-BR architecture deltas + dependsOn via first-touch ───────────
+// The FIRST rule (lowest seq) to touch an artifact `add`s it and OWNS it; any
+// later rule touching it `modify`s it. Two things fall out of that ownership:
+//   - `modify` of another feature's artifact = a derived cross-feature change
+//     (the "handles a change for feature 1 and 12" relationship).
+//   - `dependsOn` = the owners of everything this rule modifies — i.e. the rules
+//     that introduced the artifacts you must understand to change them safely.
+//     (Owners always precede the modifier, so edges point strictly backward.)
 const DELTA_KINDS = ['entities', 'endpoints', 'slices', 'components', 'selectors'];
 const ownerOf = {}; // `${kind}::${target}` -> { feature, slug }
 for (const r of all) { // `all` is in seq order
   const delta = {};
   const modifiesFeatures = new Set();
+  const deps = new Set();
   for (const kind of DELTA_KINDS) {
     for (const t of r.touches[kind] ?? []) {
       const key = `${kind}::${t}`;
-      const op = ownerOf[key] ? 'modify' : 'add';
-      if (op === 'add') ownerOf[key] = { feature: r.feature, slug: r.slug };
-      else if (ownerOf[key].feature !== r.feature) modifiesFeatures.add(ownerOf[key].feature);
-      ((delta[kind] ??= {})[op] ??= []).push(t);
+      const owner = ownerOf[key];
+      if (!owner) {
+        ownerOf[key] = { feature: r.feature, slug: r.slug };
+        ((delta[kind] ??= {}).add ??= []).push(t);
+      } else {
+        ((delta[kind] ??= {}).modify ??= []).push(t);
+        if (owner.feature !== r.feature) modifiesFeatures.add(owner.feature);
+        if (owner.slug !== r.slug) deps.add(owner.slug);
+      }
     }
   }
   r.delta = delta;
   r.modifiesFeatures = [...modifiesFeatures];
+  r.deps = [...deps].sort();
 }
 
 // ── render a rule file ───────────────────────────────────────────────────────
