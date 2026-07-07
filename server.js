@@ -141,6 +141,35 @@ app.put('/api/br-positions', async (req, res) => {
   }
 });
 
+// ── BR display order (app-owned, drag-to-reorder list) ────────────────────────
+// An array of rule names in the user's chosen order. Same ownership rules as
+// br-positions: stored with the target project, written only by the viewer.
+app.get('/api/br-order', async (req, res) => {
+  const { root } = req.query;
+  if (!root) return res.status(400).json({ error: 'root required' });
+  try {
+    const abs = safePath(root, 'br-order.json');
+    const content = await fs.readFile(abs, 'utf-8');
+    res.json(JSON.parse(content));
+  } catch {
+    res.json([]); // no custom order yet
+  }
+});
+
+app.put('/api/br-order', async (req, res) => {
+  const { root } = req.query;
+  if (!root) return res.status(400).json({ error: 'root required' });
+  if (!Array.isArray(req.body)) return res.status(400).json({ error: 'body must be an array of rule names' });
+  try {
+    const abs = safePath(root, 'br-order.json');
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, JSON.stringify(req.body, null, 2), 'utf-8');
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Methodology (this repo's own .claude dir: agents, commands, schemas, scripts) ──
 // The .claude dir IS the single source of truth: Claude Code auto-discovers it,
 // and the app serves the very same files (no copies, no build step). Override the

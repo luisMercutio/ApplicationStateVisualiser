@@ -22,6 +22,7 @@ import { MockupViewComponent } from '../views/mockup-view/mockup-view.component'
 import { TestReportComponent } from '../views/test-report/test-report.component';
 import { ResourcesEditorComponent } from '../views/resources-editor/resources-editor.component';
 import { BrGraphComponent } from '../views/br-graph/br-graph.component';
+import { BrListComponent } from '../views/br-list/br-list.component';
 import { ComposedStateComponent } from '../views/composed-state/composed-state.component';
 
 const FILE_MAP: Record<ViewType, ((id: string) => string) | string> = {
@@ -44,6 +45,7 @@ const FILE_MAP: Record<ViewType, ((id: string) => string) | string> = {
   'test-report-frontend': id => `${id}/test-report-frontend.md`,
   'resources': '',
   'br-graph': '',
+  'br-list': '',
   'composed-state': '',
 };
 
@@ -58,7 +60,7 @@ const MERMAID_VIEWS: ViewType[] = ['class-diagram', 'frontend-state'];
     UcTrackerComponent, SuggestionComponent, MermaidViewComponent, DiffViewComponent,
     OpenApiViewComponent, SelectorsViewComponent, TestStateComponent,
     ContractValidationComponent, MockupViewComponent, TestReportComponent,
-    ResourcesEditorComponent, BrGraphComponent, ComposedStateComponent,
+    ResourcesEditorComponent, BrGraphComponent, BrListComponent, ComposedStateComponent,
   ],
   template: `
     <div class="panel-wrapper">
@@ -120,6 +122,7 @@ const MERMAID_VIEWS: ViewType[] = ['class-diagram', 'frontend-state'];
           @case ('test-report-frontend') { <app-test-report [filePath]="filePath()"></app-test-report> }
           @case ('resources') { <app-resources-editor></app-resources-editor> }
           @case ('br-graph') { <app-br-graph></app-br-graph> }
+          @case ('br-list') { <app-br-list></app-br-list> }
           @case ('composed-state') { <app-composed-state></app-composed-state> }
         }
       </div>

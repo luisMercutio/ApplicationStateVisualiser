@@ -7,7 +7,15 @@ import { Panel } from '../models/panel.model';
 import { BrPosition } from '../models/business-rule.model';
 import { RuleEntry } from '../models/rule-index.model';
 
-const API_BASE = 'http://localhost:3001';
+// Derive the API host from the page's own host so the app works both on
+// localhost and when reached over the network (e.g. a phone on Tailscale
+// loading http://<tailscale-ip>:4201 → API at http://<tailscale-ip>:3001).
+// Override with ?apiPort= or a build-time global if the server port changes.
+const API_PORT = 3001;
+const API_BASE =
+  typeof window !== 'undefined' && window.location?.hostname
+    ? `${window.location.protocol}//${window.location.hostname}:${API_PORT}`
+    : `http://localhost:${API_PORT}`;
 
 @Injectable({ providedIn: 'root' })
 export class FileService {
@@ -70,6 +78,17 @@ export class FileService {
   saveBrPositions(root: string, positions: Record<string, BrPosition>): Observable<void> {
     const params = new HttpParams().set('root', root);
     return this.http.put<void>(`${API_BASE}/api/br-positions`, positions, { params });
+  }
+
+  // ── Business Rule display order (app-owned drag-to-reorder list) ──
+  getBrOrder(root: string): Observable<string[]> {
+    const params = new HttpParams().set('root', root);
+    return this.http.get<string[]>(`${API_BASE}/api/br-order`, { params });
+  }
+
+  saveBrOrder(root: string, order: string[]): Observable<void> {
+    const params = new HttpParams().set('root', root);
+    return this.http.put<void>(`${API_BASE}/api/br-order`, order, { params });
   }
 
   ping(): Observable<{ ok: boolean }> {

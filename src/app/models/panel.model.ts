@@ -18,6 +18,7 @@ export type ViewType =
   | 'test-report-frontend'
   | 'resources'
   | 'br-graph'
+  | 'br-list'
   | 'composed-state';
 
 export const VIEW_TYPE_LABELS: Record<ViewType, string> = {
@@ -40,6 +41,7 @@ export const VIEW_TYPE_LABELS: Record<ViewType, string> = {
   'test-report-frontend': 'Frontend Report',
   'resources': 'Agents & Commands',
   'br-graph': 'BR Net',
+  'br-list': 'BR List',
   'composed-state': 'Composed State',
 };
 
