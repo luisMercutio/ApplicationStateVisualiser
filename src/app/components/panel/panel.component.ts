@@ -24,6 +24,7 @@ import { ResourcesEditorComponent } from '../views/resources-editor/resources-ed
 import { BrGraphComponent } from '../views/br-graph/br-graph.component';
 import { BrListComponent } from '../views/br-list/br-list.component';
 import { ComposedStateComponent } from '../views/composed-state/composed-state.component';
+import { TerminalComponent } from '../views/terminal/terminal.component';
 
 const FILE_MAP: Record<ViewType, ((id: string) => string) | string> = {
   'uc-tracker': 'usecases.md',
@@ -47,6 +48,7 @@ const FILE_MAP: Record<ViewType, ((id: string) => string) | string> = {
   'br-graph': '',
   'br-list': '',
   'composed-state': '',
+  'terminal': '',
 };
 
 const DIFF_VIEWS: ViewType[] = ['class-diagram-diff', 'openapi-diff', 'frontend-state-diff', 'selectors-diff', 'test-state-diff', 'mockups-diff'];
@@ -61,6 +63,7 @@ const MERMAID_VIEWS: ViewType[] = ['class-diagram', 'frontend-state'];
     OpenApiViewComponent, SelectorsViewComponent, TestStateComponent,
     ContractValidationComponent, MockupViewComponent, TestReportComponent,
     ResourcesEditorComponent, BrGraphComponent, BrListComponent, ComposedStateComponent,
+    TerminalComponent,
   ],
   template: `
     <div class="panel-wrapper">
@@ -124,6 +127,7 @@ const MERMAID_VIEWS: ViewType[] = ['class-diagram', 'frontend-state'];
           @case ('br-graph') { <app-br-graph></app-br-graph> }
           @case ('br-list') { <app-br-list></app-br-list> }
           @case ('composed-state') { <app-composed-state></app-composed-state> }
+          @case ('terminal') { <app-terminal></app-terminal> }
         }
       </div>
     </div>

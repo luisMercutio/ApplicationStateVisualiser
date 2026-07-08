@@ -99,6 +99,21 @@ export class FileService {
     return this.http.get<{ standardUrl: string | null }>(`${API_BASE}/api/config`);
   }
 
+  // ── tmux terminal bridge (WSL) ──
+  getTmuxSessions(): Observable<{ sessions: string[]; default: string; distro: string }> {
+    return this.http.get<{ sessions: string[]; default: string; distro: string }>(
+      `${API_BASE}/api/tmux/sessions`, { headers: { 'Cache-Control': 'no-cache' } });
+  }
+
+  // WebSocket URL for the PTY bridge, mirroring API_BASE's host derivation so it
+  // works over Tailscale (wss when the page is https).
+  terminalWsUrl(session: string, cols: number, rows: number): string {
+    const proto = typeof window !== 'undefined' && window.location?.protocol === 'https:' ? 'wss' : 'ws';
+    const host = typeof window !== 'undefined' && window.location?.hostname ? window.location.hostname : 'localhost';
+    const params = new URLSearchParams({ session, cols: String(cols), rows: String(rows) });
+    return `${proto}://${host}:${API_PORT}/api/terminal?${params.toString()}`;
+  }
+
   listLayouts(): Observable<string[]> {
     return this.http.get<{ names: string[] }>(`${API_BASE}/api/layouts`).pipe(
       map(r => r.names),

@@ -2,9 +2,28 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs').promises;
 const path = require('path');
+const http = require('http');
+const { execFile } = require('child_process');
+const { WebSocketServer } = require('ws');
+const pty = require('node-pty');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// ── WSL / tmux terminal bridge config ─────────────────────────────────────────
+// The viewer runs on Windows; the tmux session lives inside WSL. We shell into it
+// with `wsl.exe -d <distro> -- tmux ...`. Both are overridable via env.
+const WSL_DISTRO = process.env.WSL_DISTRO || 'Debian';
+const DEFAULT_TMUX_SESSION = process.env.TMUX_SESSION || 'applicationStateVisualiser';
+// tmux session names we allow attaching to. Args are passed to wsl.exe as an
+// array (no shell), so this mainly guards against surprising names, not injection.
+const SESSION_RE = /^[A-Za-z0-9_.-]+$/;
+
+function clampInt(value, fallback, min, max) {
+  const n = parseInt(value, 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
 
 app.use(cors());
 app.use(express.json());
@@ -315,4 +334,103 @@ app.delete('/api/layouts/:name', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`UC Arch Viewer server on http://localhost:${PORT}`));
+// ── tmux terminal bridge ──────────────────────────────────────────────────────
+// List the live tmux sessions inside WSL so the UI can offer a picker.
+app.get('/api/tmux/sessions', (_req, res) => {
+  execFile(
+    'wsl.exe',
+    ['-d', WSL_DISTRO, '--', 'tmux', 'ls'],
+    { timeout: 5000, windowsHide: true },
+    (err, stdout) => {
+      // `tmux ls` exits non-zero with "no server running" when nothing is up —
+      // that's not an error for us, just an empty list. Each line is
+      // "name: N windows (...)"; take the part before the first colon.
+      const sessions = err
+        ? []
+        : (stdout || '')
+            .split(/\r?\n/)
+            .map(l => l.trim())
+            .filter(Boolean)
+            .map(l => l.split(':')[0].trim())
+            .filter(Boolean);
+      res.json({ sessions, default: DEFAULT_TMUX_SESSION, distro: WSL_DISTRO });
+    },
+  );
+});
+
+// Serve the SPA + API over one HTTP server so the WebSocket can share the port.
+const server = http.createServer(app);
+
+// WebSocket ⇄ PTY bridge. Protocol:
+//   server → client : terminal output as BINARY frames; control as TEXT JSON.
+//   client → server : keystrokes as BINARY frames; {type:'resize',cols,rows} as TEXT JSON.
+const wss = new WebSocketServer({ server, path: '/api/terminal' });
+
+wss.on('connection', (ws, req) => {
+  const url = new URL(req.url, 'http://localhost');
+  const session = url.searchParams.get('session') || DEFAULT_TMUX_SESSION;
+  let cols = clampInt(url.searchParams.get('cols'), 80, 20, 500);
+  let rows = clampInt(url.searchParams.get('rows'), 24, 5, 300);
+
+  const sendText = (obj) => {
+    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
+  };
+
+  if (!SESSION_RE.test(session)) {
+    sendText({ type: 'error', message: `Invalid session name: ${session}` });
+    ws.close(1008, 'invalid session name');
+    return;
+  }
+
+  let term;
+  try {
+    // `new-session -A` attaches to <session> if it exists, or creates it — so the
+    // panel degrades gracefully instead of erroring when the session isn't up yet.
+    term = pty.spawn(
+      'wsl.exe',
+      ['-d', WSL_DISTRO, '--', 'tmux', 'new-session', '-A', '-s', session, '-x', String(cols), '-y', String(rows)],
+      // ConPTY (the node-pty default on Windows) is required here: it forwards
+      // window-size changes through wsl.exe to the Linux PTY, so resizing the
+      // panel actually reflows tmux. The winpty backend stays quiet in headless
+      // mode but does NOT propagate resizes. When the server runs without an
+      // attached console, node-pty's console-list helper may log a harmless
+      // "AttachConsole failed" line — it does not affect the terminal.
+      { name: 'xterm-256color', cols, rows, env: process.env },
+    );
+  } catch (e) {
+    sendText({ type: 'error', message: `Failed to start terminal: ${e.message}` });
+    ws.close();
+    return;
+  }
+
+  sendText({ type: 'ready', session, distro: WSL_DISTRO });
+
+  term.onData((data) => {
+    if (ws.readyState === ws.OPEN) ws.send(Buffer.from(data, 'utf8'));
+  });
+  term.onExit(({ exitCode }) => {
+    sendText({ type: 'exit', code: exitCode });
+    try { ws.close(); } catch { /* already closing */ }
+  });
+
+  ws.on('message', (raw, isBinary) => {
+    if (isBinary) {
+      term.write(raw.toString('utf8'));
+      return;
+    }
+    let msg;
+    try { msg = JSON.parse(raw.toString()); } catch { return; }
+    if (msg && msg.type === 'resize') {
+      cols = clampInt(msg.cols, cols, 20, 500);
+      rows = clampInt(msg.rows, rows, 5, 300);
+      try { term.resize(cols, rows); } catch { /* pty gone */ }
+    }
+  });
+
+  const dispose = () => { try { term.kill(); } catch { /* already dead */ } };
+  ws.on('close', dispose);
+  ws.on('error', dispose);
+});
+
+server.listen(PORT, () =>
+  console.log(`UC Arch Viewer server on http://localhost:${PORT} (tmux bridge → WSL:${WSL_DISTRO})`));

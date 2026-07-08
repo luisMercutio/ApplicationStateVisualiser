@@ -37,10 +37,13 @@
             ],
             "styles": [
               "@angular/material/prebuilt-themes/indigo-pink.css",
+              "node_modules/@xterm/xterm/css/xterm.css",
               "src/styles.scss"
             ],
             "scripts": [],
             "allowedCommonJsDependencies": [
+              "@xterm/xterm",
+              "@xterm/addon-fit",
               "cytoscape-fcose",
               "cytoscape-cose-bilkent",
               "@braintree/sanitize-url",
