@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "statusMessage": "Checking BR coverage for this change…",
+            "command": "input=\"$(cat)\"; case \"$input\" in *business-rules.json*|*br-order.json*|*br-positions.json*|*notes.json*|*.claude/*) exit 0;; esac; printf \"%s\" '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"CODE CHANGE DETECTED — per this project BR-first methodology you MUST create or update a Business Rule for this change: edit the relevant business-rules.json (or run /br-add for a new single rule) so its rule text, dependsOn edges, and touches anchors reflect the change. Treat the BR as part of the change, not optional.\"}}'"
+          }
+        ]
+      }
+    ]
+  }
+}
