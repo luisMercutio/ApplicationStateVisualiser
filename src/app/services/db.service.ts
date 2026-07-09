@@ -146,7 +146,7 @@ export class DbService {
     return this.http.delete<{ ok: boolean }>(`${API_BASE}/api/db/connections/${id}/agent-info/${infoId}`);
   }
 
-  // ── Methodology files (master DB: agents + commands) ──
+  // ── Methodology files (agents + commands, served from .claude/ on disk) ──
   listMethodology(): Observable<{ files: MethodologyFileMeta[] }> {
     return this.http.get<{ files: MethodologyFileMeta[] }>(`${API_BASE}/api/methodology`);
   }
@@ -157,5 +157,13 @@ export class DbService {
 
   saveMethodology(kind: MethodologyKind, name: string, content: string): Observable<MethodologyFile> {
     return this.http.put<MethodologyFile>(`${API_BASE}/api/methodology/${kind}/${encodeURIComponent(name)}`, { content });
+  }
+
+  deleteMethodology(kind: MethodologyKind, name: string): Observable<{ kind: string; name: string; deleted: boolean }> {
+    return this.http.delete<{ kind: string; name: string; deleted: boolean }>(`${API_BASE}/api/methodology/${kind}/${encodeURIComponent(name)}`);
+  }
+
+  renameMethodology(kind: MethodologyKind, name: string, newName: string): Observable<MethodologyFile> {
+    return this.http.post<MethodologyFile>(`${API_BASE}/api/methodology/${kind}/${encodeURIComponent(name)}/rename`, { newName });
   }
 }

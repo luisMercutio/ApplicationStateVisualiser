@@ -65,5 +65,32 @@ export const methodologyFeature = createFeature({
       saving: { ...state.saving, [key]: false },
       error,
     })),
+    on(MethodologyActions.createFileFailure, (state, { error }) => ({ ...state, error })),
+    on(MethodologyActions.deleteFileSuccess, (state, { key }) => ({
+      ...state,
+      selectedKey: state.selectedKey === key ? null : state.selectedKey,
+      original: omit(state.original, key),
+      draft: omit(state.draft, key),
+      loading: omit(state.loading, key),
+      saving: omit(state.saving, key),
+      error: null,
+    })),
+    on(MethodologyActions.deleteFileFailure, (state, { error }) => ({ ...state, error })),
+    on(MethodologyActions.renameFileSuccess, (state, { oldKey }) => ({
+      ...state,
+      original: omit(state.original, oldKey),
+      draft: omit(state.draft, oldKey),
+      loading: omit(state.loading, oldKey),
+      saving: omit(state.saving, oldKey),
+      error: null,
+    })),
+    on(MethodologyActions.renameFileFailure, (state, { error }) => ({ ...state, error })),
   ),
 });
+
+/** Return a shallow copy of `map` without the given key. */
+function omit<T>(map: Record<string, T>, key: string): Record<string, T> {
+  if (!(key in map)) return map;
+  const { [key]: _removed, ...rest } = map;
+  return rest;
+}

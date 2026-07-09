@@ -7,6 +7,7 @@ const { execFile } = require('child_process');
 const { WebSocketServer } = require('ws');
 const pty = require('node-pty');
 const dbStore = require('./db-store');
+const methodology = require('./methodology-store');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -39,9 +40,7 @@ function clampInt(value, fallback, min, max) {
 }
 
 app.use(cors());
-// Business Rules may carry self-contained snapshots (e.g. full methodology-file
-// content in delta) so the app can be reseeded from a single row; allow large bodies.
-app.use(express.json({ limit: '25mb' }));
+app.use(express.json());
 
 app.get('/api/ping', (_req, res) => res.json({ ok: true }));
 
@@ -314,23 +313,33 @@ app.get('/api/db/active/agent-info', async (req, res) => {
   } catch (err) { sendDbError(res, err); }
 });
 
-// ── Methodology files in the master DB (agents + commands) ────────────────────
-// The master DB is the source of truth; saves also write through to .claude/ on
-// disk so Claude Code keeps seeing the live copy. Editable from within the app.
+// ── Methodology files (agents + commands) ─────────────────────────────────────
+// Served straight from .claude/ on disk — the filesystem is the single source of
+// truth (exactly where Claude Code discovers them), so there is no DB copy to seed
+// or keep in sync. Full CRUD: list, read, create/edit, delete, rename. Independent
+// of MariaDB, so methodology stays editable even when the database is down.
 app.get('/api/methodology', async (_req, res) => {
-  try { res.json({ files: await dbStore.listMethodologyFiles() }); } catch (err) { sendDbError(res, err); }
+  try { res.json({ files: await methodology.listMethodologyFiles() }); } catch (err) { sendDbError(res, err); }
 });
 
 app.get('/api/methodology/:kind/:name', async (req, res) => {
   try {
-    const file = await dbStore.getMethodologyFile(req.params.kind, req.params.name);
+    const file = await methodology.getMethodologyFile(req.params.kind, req.params.name);
     if (!file) return res.status(404).json({ error: 'file not found' });
     res.json(file);
   } catch (err) { sendDbError(res, err); }
 });
 
 app.put('/api/methodology/:kind/:name', async (req, res) => {
-  try { res.json(await dbStore.saveMethodologyFile(req.params.kind, req.params.name, (req.body || {}).content)); } catch (err) { sendDbError(res, err); }
+  try { res.json(await methodology.saveMethodologyFile(req.params.kind, req.params.name, (req.body || {}).content)); } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/methodology/:kind/:name', async (req, res) => {
+  try { res.json(await methodology.deleteMethodologyFile(req.params.kind, req.params.name)); } catch (err) { sendDbError(res, err); }
+});
+
+app.post('/api/methodology/:kind/:name/rename', async (req, res) => {
+  try { res.json(await methodology.renameMethodologyFile(req.params.kind, req.params.name, (req.body || {}).newName)); } catch (err) { sendDbError(res, err); }
 });
 
 // ── ntfy activity feed ────────────────────────────────────────────────────────

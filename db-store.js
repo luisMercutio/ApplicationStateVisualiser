@@ -27,12 +27,6 @@ function clampInt(value, fallback, min, max) {
 // no longer be decrypted — treat .db-secret.key like any other secret.
 const KEY_FILE = path.resolve(__dirname, '.db-secret.key');
 
-// The methodology files (agents + commands) live under this repo's .claude dir.
-// The master DB becomes their source of truth, but we also write edits back to
-// disk so Claude Code (which auto-discovers .claude/) always sees the live copy.
-const CLAUDE_DIR = path.resolve(__dirname, process.env.CLAUDE_DIR || '.claude');
-const METHODOLOGY_KINDS = { agent: 'agents', command: 'commands' }; // kind -> subdir
-
 function loadOrCreateKey() {
   const env = process.env.ASV_SECRET_KEY;
   if (env) {
@@ -125,18 +119,8 @@ async function init() {
         v TEXT
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
-    await storePool.query(`
-      CREATE TABLE IF NOT EXISTS methodology_files (
-        kind       VARCHAR(32)  NOT NULL,
-        name       VARCHAR(190) NOT NULL,
-        content    LONGTEXT,
-        updated_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        PRIMARY KEY (kind, name)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
-
     ready = true;
     initError = null;
-    await seedMethodology(); // best-effort; never blocks readiness
   } catch (err) {
     ready = false;
     initError = err.message;
@@ -849,76 +833,6 @@ async function listAgentInfoUpToSeq(id, seq) {
   return all.filter((a) => seqCompare(a.brSeq, seq) <= 0);
 }
 
-// ── Methodology files (agents + commands) — master DB is source of truth ──────
-// Seed once from disk; thereafter the master DB is authoritative. Edits round-trip
-// to disk too so Claude Code keeps working against .claude/ without a build step.
-function methodologySubdir(kind) {
-  const sub = METHODOLOGY_KINDS[kind];
-  if (!sub) throw badRequest(`unknown methodology kind: ${kind}`);
-  return sub;
-}
-
-function assertFileName(name) {
-  if (!/^[A-Za-z0-9._-]+$/.test(String(name || ''))) throw badRequest('invalid file name');
-  return name;
-}
-
-async function seedMethodology() {
-  try {
-    const [[{ n }]] = await storePool.query('SELECT COUNT(*) AS n FROM methodology_files');
-    if (n > 0) return; // already seeded / user-managed
-    for (const [kind, sub] of Object.entries(METHODOLOGY_KINDS)) {
-      let entries = [];
-      try { entries = await fs.promises.readdir(path.join(CLAUDE_DIR, sub)); } catch { continue; }
-      for (const name of entries.filter(f => f.endsWith('.md'))) {
-        const content = await fs.promises.readFile(path.join(CLAUDE_DIR, sub, name), 'utf8');
-        await storePool.query(
-          'INSERT INTO methodology_files (kind, name, content) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE content = VALUES(content)',
-          [kind, name, content],
-        );
-      }
-    }
-  } catch (err) {
-    console.warn(`Methodology seed skipped: ${err.message}`);
-  }
-}
-
-async function listMethodologyFiles() {
-  ensureReady();
-  const [rows] = await storePool.query('SELECT kind, name, updated_at FROM methodology_files ORDER BY kind, name');
-  return rows.map(r => ({ kind: r.kind, name: r.name, updatedAt: r.updated_at }));
-}
-
-async function getMethodologyFile(kind, name) {
-  ensureReady();
-  methodologySubdir(kind);
-  assertFileName(name);
-  const [rows] = await storePool.query('SELECT kind, name, content, updated_at FROM methodology_files WHERE kind = ? AND name = ?', [kind, name]);
-  if (!rows.length) return null;
-  const r = rows[0];
-  return { kind: r.kind, name: r.name, content: r.content ?? '', updatedAt: r.updated_at };
-}
-
-async function saveMethodologyFile(kind, name, content) {
-  ensureReady();
-  const sub = methodologySubdir(kind);
-  assertFileName(name);
-  if (typeof content !== 'string') throw badRequest('content (string) required');
-  await storePool.query(
-    'INSERT INTO methodology_files (kind, name, content) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE content = VALUES(content)',
-    [kind, name, content],
-  );
-  // Best-effort write-through to disk so the live .claude/ copy stays in sync.
-  try {
-    const dir = path.join(CLAUDE_DIR, sub);
-    await fs.promises.mkdir(dir, { recursive: true });
-    await fs.promises.writeFile(path.join(dir, name), content, 'utf8');
-  } catch (err) {
-    console.warn(`Methodology disk write-through failed for ${kind}/${name}: ${err.message}`);
-  }
-  return getMethodologyFile(kind, name);
-}
-
 module.exports = {
   init, status,
   listConnections, getConnection, createConnection, updateConnection, deleteConnection,
@@ -929,5 +843,4 @@ module.exports = {
   listNotes, createNote, updateNote, deleteNote,
   listBusinessRules, createBusinessRule, updateBusinessRule, deleteBusinessRule,
   listAgentInfo, createAgentInfo, updateAgentInfo, deleteAgentInfo, listAgentInfoUpToSeq,
-  listMethodologyFiles, getMethodologyFile, saveMethodologyFile,
 };
