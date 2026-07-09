@@ -1,8 +1,8 @@
-Apply learnings from completed change requests back into the UC pipeline. Usage: `/cr-propagate`
+Apply learnings from completed change requests back into the Epic pipeline. Usage: `/cr-propagate`
 
 ## What you are doing
 
-You are reading all CRs with `status: pending-propagation`, grouping their recommendations by target file, and proposing exact edits to agent `.md` files and the `uc-suggest` command. Because bad rules permanently degrade every future UC, you never auto-apply — you first produce a `propagate-report.md` for human review, then apply only after explicit approval.
+You are reading all CRs with `status: pending-propagation`, grouping their recommendations by target file, and proposing exact edits to agent `.md` files and the `epic-suggest` command. Because bad rules permanently degrade every future Epic, you never auto-apply — you first produce a `propagate-report.md` for human review, then apply only after explicit approval.
 
 ---
 
@@ -26,7 +26,7 @@ Collect only those with `status: pending-propagation`. If none found:
 > No CRs with status `pending-propagation` found. Nothing to propagate.
 Stop.
 
-List the CRs found: id, related-ucs, stage-attributed-to.
+List the CRs found: id, related-epics, stage-attributed-to.
 
 ---
 
@@ -35,7 +35,7 @@ List the CRs found: id, related-ucs, stage-attributed-to.
 From each CR's Recommendations section, extract the non-"None" items per target. Group across all CRs:
 
 ```
-uc-suggest            : [list of checklist questions from all CRs]
+epic-suggest          : [list of checklist questions from all CRs]
 backend-architect     : [list of rules from all CRs]
 frontend-architect    : [list of rules from all CRs]
 backend-developer     : [list of rules from all CRs]
@@ -54,7 +54,7 @@ For each group that has at least one item, read the current content of the targe
 
 | Target | File |
 |---|---|
-| `uc-suggest` | `.claude/commands/uc-suggest.md` |
+| `epic-suggest` | `.claude/commands/epic-suggest.md` |
 | `backend-architect` | `.claude/agents/backend-architect.md` |
 | `frontend-architect` | `.claude/agents/frontend-architect.md` |
 | `backend-developer` | `.claude/agents/backend-developer.md` |
@@ -64,7 +64,7 @@ For each group that has at least one item, read the current content of the targe
 
 For each agent file, locate the existing **`## Hard Rules`** section (or the closest equivalent section at the end of the file).
 
-For `uc-suggest.md`, locate a **`## Past CR Lessons`** section — create it at the end if it does not exist.
+For `epic-suggest.md`, locate a **`## Past CR Lessons`** section — create it at the end if it does not exist.
 
 ---
 
@@ -88,22 +88,22 @@ source-crs: [CR-<name1>, CR-<name2>, ...]
 
 | Target file | Items to add | Source CRs |
 |---|---|---|
-| uc-suggest.md | N | CR-xxx, CR-yyy |
+| epic-suggest.md | N | CR-xxx, CR-yyy |
 | backend-architect.md | N | CR-xxx |
 | ... | | |
 
 ---
 
-## uc-suggest.md — Past CR Lessons section
+## epic-suggest.md — Past CR Lessons section
 
-**Action:** Add to (or create) the `## Past CR Lessons` section at the end of `.claude/commands/uc-suggest.md`.
+**Action:** Add to (or create) the `## Past CR Lessons` section at the end of `.claude/commands/epic-suggest.md`.
 
 **Proposed addition:**
 ```
 ## Past CR Lessons
 
 The following questions were derived from change requests. Ask these during the suggestion
-session when the UC touches the relevant domain:
+session when the Epic touches the relevant domain:
 
 - **Booking / time-range entities:** Ask whether two records for the same entity can overlap
   in time. If yes, specify the conflict-resolution rule as a BR.
@@ -154,8 +154,8 @@ Read `.claude/architecture/propagate-report.md`. Confirm `status: approved`. If 
 For each target section in the report where action is "Add":
 
 1. Read the current target file.
-2. Locate the target section (`## Hard Rules` for agents, `## Past CR Lessons` for uc-suggest).
-3. If `## Past CR Lessons` does not exist in `uc-suggest.md`, append it at the very end.
+2. Locate the target section (`## Hard Rules` for agents, `## Past CR Lessons` for epic-suggest).
+3. If `## Past CR Lessons` does not exist in `epic-suggest.md`, append it at the very end.
 4. Append the proposed text to the section. Preserve all existing content — never remove or reorder existing rules.
 5. Write the updated file.
 
@@ -170,7 +170,7 @@ Update `.claude/architecture/propagate-report.md` frontmatter: `status: complete
 ## Step 7 — Commit
 
 ```bash
-git add .claude/agents/ .claude/commands/uc-suggest.md .claude/architecture/
+git add .claude/agents/ .claude/commands/epic-suggest.md .claude/architecture/
 git commit -m "refactor(pipeline): propagate CR learnings to agent rules [cr-propagate]"
 ```
 
@@ -189,7 +189,7 @@ Sources: CR-<name1>, CR-<name2>, ...
 ### Changes applied
 | Target file | Items added |
 |---|---|
-| uc-suggest.md | N (Past CR Lessons section) |
+| epic-suggest.md | N (Past CR Lessons section) |
 | backend-architect.md | N (Hard Rules) |
 | ... | |
 
@@ -199,7 +199,7 @@ Sources: CR-<name1>, CR-<name2>, ...
 
 ### Next steps
 - Review the updated agent files to confirm the additions read naturally in context.
-- The next /uc-generate run will use the updated agent rules automatically.
+- The next /epic-generate run will use the updated agent rules automatically.
 - Run /cr-propagate again after future CRs accumulate.
 ```
 

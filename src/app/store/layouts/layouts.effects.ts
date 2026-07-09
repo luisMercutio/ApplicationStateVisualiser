@@ -2,12 +2,11 @@ import { Injectable, inject } from '@angular/core';
 import { Actions, createEffect, ofType } from '@ngrx/effects';
 import { Store } from '@ngrx/store';
 import { MatSnackBar } from '@angular/material/snack-bar';
-import { switchMap, mergeMap, map, catchError, withLatestFrom, tap, filter } from 'rxjs/operators';
+import { switchMap, mergeMap, map, catchError, withLatestFrom, tap } from 'rxjs/operators';
 import { of, EMPTY } from 'rxjs';
 import { LayoutsActions } from './layouts.actions';
 import { LayoutActions } from '../layout/layout.actions';
 import { FileService } from '../../services/file.service';
-import { selectRootPath } from '../layout/layout.selectors';
 import { selectPanels } from '../layout/layout.selectors';
 
 @Injectable()
@@ -26,14 +25,6 @@ export class LayoutsEffects {
           catchError(() => of(LayoutsActions.loadLayoutsSuccess({ names: [] }))),
         ),
       ),
-    ),
-  );
-
-  loadOnRootChange$ = createEffect(() =>
-    this.actions$.pipe(
-      ofType(LayoutActions.setRootPath),
-      filter(({ rootPath }) => !!rootPath),
-      map(() => LayoutsActions.loadLayouts()),
     ),
   );
 

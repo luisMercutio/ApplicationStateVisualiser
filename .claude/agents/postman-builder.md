@@ -1,13 +1,13 @@
 ---
 name: postman-builder
-description: Postman collection generator. MUST BE USED by /uc-generate after contract validation PASSES. Reads the UC's openapi.yaml, testState.md, and suggestion.md to append a new UC folder (with one BR sub-folder per testable BR) to the cumulative postman/campmanager-collection.json. Creates postman/campmanager-environment.json if it does not exist. Does NOT write Java, Kotlin, Angular, or SQL code. Does NOT modify architecture files.
+description: Postman collection generator. MUST BE USED by /epic-generate after contract validation PASSES. Reads the Epic's openapi.yaml, testState.md, and suggestion.md to append a new Epic folder (with one BR sub-folder per testable BR) to the cumulative postman/campmanager-collection.json. Creates postman/campmanager-environment.json if it does not exist. Does NOT write Java, Kotlin, Angular, or SQL code. Does NOT modify architecture files.
 tools: Read, Write, Glob, Grep
 model: inherit
 ---
 
 # Postman Builder
 
-You maintain a single cumulative Postman Collection v2.1 file that grows with every UC. Your job for each UC is to append a new top-level folder — one per UC — containing sub-folders for every testable Business Rule. Each BR sub-folder contains ordered requests: setup (pre-request chain), test (the business-rule assertion), and teardown (cleanup for re-runnability).
+You maintain a single cumulative Postman Collection v2.1 file that grows with every Epic. Your job for each Epic is to append a new top-level folder — one per Epic — containing sub-folders for every testable Business Rule. Each BR sub-folder contains ordered requests: setup (pre-request chain), test (the business-rule assertion), and teardown (cleanup for re-runnability).
 
 You do not write application code. You do not modify architecture files. You read `openapi.yaml` and `testState.md` and produce idiomatic Postman JSON.
 
@@ -19,9 +19,9 @@ You will be invoked with explicit paths to:
 
 | Input | Path |
 |---|---|
-| openapi | `<uc-folder>/openapi.yaml` |
-| testState | `<uc-folder>/testState.md` |
-| suggestion | `<uc-folder>/suggestion.md` |
+| openapi | `<epic-folder>/openapi.yaml` |
+| testState | `<epic-folder>/testState.md` |
+| suggestion | `<epic-folder>/suggestion.md` |
 | Collection (cumulative) | `postman/campmanager-collection.json` |
 | Environment | `postman/campmanager-environment.json` |
 
@@ -31,7 +31,7 @@ You will be invoked with explicit paths to:
 
 | Output | Path | Behavior |
 |---|---|---|
-| Collection | `postman/campmanager-collection.json` | Append UC folder; create file if absent |
+| Collection | `postman/campmanager-collection.json` | Append Epic folder; create file if absent |
 | Environment | `postman/campmanager-environment.json` | Create if absent; never overwrite existing values |
 
 The `postman/` directory is at the repository root (peer to `.claude/`). Create it if it does not exist.
@@ -84,13 +84,13 @@ The root collection object schema:
 }
 ```
 
-- `item` at the root level is the array of UC top-level folders.
-- Each UC folder has a `name` (`"UC-NNN: <UC Title>"`) and an `item` array of BR sub-folders.
+- `item` at the root level is the array of Epic top-level folders.
+- Each Epic folder has a `name` (`"EPIC-NNN: <Epic Title>"`) and an `item` array of BR sub-folders.
 - Each BR sub-folder has a `name` (`"BR-NNN.N: <BR description>"`) and an `item` array of individual requests.
 
-**When the collection file already exists:** read it, locate the existing UC folder by name prefix `UC-NNN:`, replace it entirely if found (idempotent re-run), otherwise append.
+**When the collection file already exists:** read it, locate the existing Epic folder by name prefix `EPIC-NNN:`, replace it entirely if found (idempotent re-run), otherwise append.
 
-**When the collection file does not exist:** create it from scratch using the root schema above, then add the UC folder as the first item.
+**When the collection file does not exist:** create it from scratch using the root schema above, then add the Epic folder as the first item.
 
 ---
 
@@ -115,18 +115,18 @@ Create this file only if it does not exist. Never overwrite an existing environm
 
 ---
 
-## UC folder structure
+## Epic folder structure
 
-For each UC, produce one top-level folder:
+For each Epic, produce one top-level folder:
 
 ```json
 {
-  "name": "UC-NNN: <UC Title from suggestion.md>",
+  "name": "EPIC-NNN: <Epic Title from suggestion.md>",
   "item": [ /* one BR sub-folder per testable BR */ ]
 }
 ```
 
-Extract the UC title from the `title:` field in `suggestion.md` frontmatter.
+Extract the Epic title from the `title:` field in `suggestion.md` frontmatter.
 
 ---
 
@@ -292,4 +292,4 @@ If no DELETE endpoint exists for a resource (read-only resource, soft-delete onl
 - Every BR section in `testState.md` that starts with `## BR-` must produce exactly one BR sub-folder. Do not skip BRs.
 - Do not include frontend-only test rows (rows where `Application` is `frontend`) when selecting endpoints — Postman tests the HTTP API, not the Angular store.
 - Environment variable names set during Setup must be unset in Teardown to avoid state leakage between runs.
-- If the UC folder for this UC already exists in the collection (same `UC-NNN:` prefix), replace it entirely. Do not duplicate.
+- If the Epic folder for this Epic already exists in the collection (same `EPIC-NNN:` prefix), replace it entirely. Do not duplicate.

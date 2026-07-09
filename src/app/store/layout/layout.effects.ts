@@ -14,14 +14,10 @@ export class LayoutEffects {
     () =>
       this.actions$.pipe(
         ofType(
-          LayoutActions.setRootPath,
-          LayoutActions.setGlobalUc,
           LayoutActions.addPanel,
           LayoutActions.removePanel,
           LayoutActions.updatePanel,
           LayoutActions.updatePanels,
-          LayoutActions.togglePin,
-          LayoutActions.pinUc,
         ),
         withLatestFrom(this.store.select(selectLayoutState)),
         tap(([, state]) => {

@@ -1,59 +1,16 @@
-export type ViewType =
-  | 'uc-tracker'
-  | 'suggestion'
-  | 'class-diagram'
-  | 'class-diagram-diff'
-  | 'openapi'
-  | 'openapi-diff'
-  | 'frontend-state'
-  | 'frontend-state-diff'
-  | 'selectors'
-  | 'selectors-diff'
-  | 'test-state'
-  | 'test-state-diff'
-  | 'contract-validation'
-  | 'mockup'
-  | 'mockups-diff'
-  | 'test-report-backend'
-  | 'test-report-frontend'
-  | 'resources'
-  | 'br-graph'
-  | 'br-list'
-  | 'composed-state'
-  | 'terminal';
+// Panels live on the "Features" page (the gridster workspace). No feature view
+// types are defined yet — the grid is placeholder scaffolding, so VIEW_TYPE_LIST
+// is intentionally empty. BR List, Methodology and Terminal are full pages now,
+// not panels, so they are deliberately NOT here.
+export type ViewType = string;
 
-export const VIEW_TYPE_LABELS: Record<ViewType, string> = {
-  'uc-tracker': 'UC Tracker',
-  'suggestion': 'Suggestion',
-  'class-diagram': 'Class Diagram',
-  'class-diagram-diff': 'DB Diff',
-  'openapi': 'API Contract',
-  'openapi-diff': 'API Diff',
-  'frontend-state': 'Frontend State',
-  'frontend-state-diff': 'Store Diff',
-  'selectors': 'Selectors',
-  'selectors-diff': 'Selectors Diff',
-  'test-state': 'Tests',
-  'test-state-diff': 'Tests Diff',
-  'contract-validation': 'Contract',
-  'mockup': 'Mockup',
-  'mockups-diff': 'Mockups Diff',
-  'test-report-backend': 'Backend Report',
-  'test-report-frontend': 'Frontend Report',
-  'resources': 'Agents & Commands',
-  'br-graph': 'BR Net',
-  'br-list': 'BR List',
-  'composed-state': 'Composed State',
-  'terminal': 'Terminal',
-};
+export const VIEW_TYPE_LABELS: Record<string, string> = {};
 
-export const VIEW_TYPE_LIST: ViewType[] = Object.keys(VIEW_TYPE_LABELS) as ViewType[];
+export const VIEW_TYPE_LIST: ViewType[] = [];
 
 export interface Panel {
   id: string;
   viewType: ViewType;
-  ucId: string | null;
-  pinned: boolean;
   x: number;
   y: number;
   rows: number;

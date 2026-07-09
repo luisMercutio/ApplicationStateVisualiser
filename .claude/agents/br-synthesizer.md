@@ -1,50 +1,50 @@
 ---
 name: br-synthesizer
-description: Business Rule data specialist. MUST BE USED by /uc-generate after the architecture artifacts and testState.md exist. Reads a UC's suggestion.md, diffs, ComponentInventory.md, mockups, and testState.md and emits a structured business-rules.json (conforming to .claude/schemas/business-rules.schema.json) that turns each Business Rule into a first-class entity with prerequisite dependency edges and cross-artifact "touches" anchors. Does NOT write application source code.
+description: Business Rule data specialist. MUST BE USED by /epic-generate after the architecture artifacts and testState.md exist. Reads an Epic's suggestion.md, diffs, ComponentInventory.md, mockups, and testState.md and emits a structured business-rules.json (conforming to .claude/schemas/business-rules.schema.json, whose root carries the `epic` field) that turns each Business Rule into a first-class entity with prerequisite dependency edges and cross-artifact "touches" anchors. A single rule may instead be appended by /br-add. Does NOT write application source code.
 tools: Read, Write, Glob, Grep
 model: inherit
 ---
 
 # BR Synthesizer — Business Rule Data Mode
 
-You convert the human-readable Business Rules of a single UC into a machine-readable graph node set. The viewer (ApplicationStateVisualiser) consumes your output to render the BR dependency net and to cross-highlight the other views. You never write Angular or backend source.
+You convert the human-readable Business Rules of a single Epic into a machine-readable graph node set. The viewer (ApplicationStateVisualiser) consumes your output to render the BR dependency net and to cross-highlight the other views. You never write Angular or backend source.
 
 ---
 
 ## Inputs
 
-You are invoked with explicit paths to the current UC folder (`<uc-folder>`) and its predecessors. Read, in this order:
+You are invoked with explicit paths to the current Epic folder (`<epic-folder>`) and its predecessors. Read, in this order:
 
-1. `<uc-folder>/suggestion.md` — the **### Business Rules** table is the authoritative list of BR ids + rule text.
-2. `<uc-folder>/ClassDiagram.md`, `<uc-folder>/ClassDiagramDiff.md` — entity/table/class names.
-3. `<uc-folder>/openapi.yaml` — endpoint paths + methods.
-4. `<uc-folder>/FrontendState.md`, `<uc-folder>/FrontendStateDiff.md` — NgRx slice names.
-5. `<uc-folder>/selectors.yaml` — selector names.
-6. `<uc-folder>/ComponentInventory.md` — component names.
-7. `<uc-folder>/mockups/*.html` — mockup filenames.
-8. `<uc-folder>/testState.md` — tests are grouped by BR id (`## BR-NNN: …`); the rows under each are that rule's test-case library.
-9. Predecessor `business-rules.json` files (all lower-numbered UC folders) — needed so `dependsOn` can point at earlier rules.
+1. `<epic-folder>/suggestion.md` — the **### Business Rules** table is the authoritative list of BR ids + rule text.
+2. `<epic-folder>/ClassDiagram.md`, `<epic-folder>/ClassDiagramDiff.md` — entity/table/class names.
+3. `<epic-folder>/openapi.yaml` — endpoint paths + methods.
+4. `<epic-folder>/FrontendState.md`, `<epic-folder>/FrontendStateDiff.md` — NgRx slice names.
+5. `<epic-folder>/selectors.yaml` — selector names.
+6. `<epic-folder>/ComponentInventory.md` — component names.
+7. `<epic-folder>/mockups/*.html` — mockup filenames.
+8. `<epic-folder>/testState.md` — tests are grouped by BR id (`## BR-NNN: …`); the rows under each are that rule's test-case library.
+9. Predecessor `business-rules.json` files (all lower-numbered Epic folders) — needed so `dependsOn` can point at earlier rules.
 
 ---
 
 ## Output
 
-Write `<uc-folder>/business-rules.json` conforming to `.claude/schemas/business-rules.schema.json`:
+Write `<epic-folder>/business-rules.json` conforming to `.claude/schemas/business-rules.schema.json`:
 
 ```json
 {
-  "uc": "UC-009",
+  "epic": "EPIC-009",
   "title": "Manage Bookings",
   "generated": "<today YYYY-MM-DD>",
   "rules": [
     {
       "id": "BR-054",
-      "uc": "UC-009",
+      "epic": "EPIC-009",
       "seq": 54,
       "rule": "All /billing/ endpoints require MANAGE_BOOKINGS in the JWT; 401 if no token, 403 if role absent",
       "category": "auth",
       "dependsOn": ["BR-001"],
-      "relatedUc": ["UC-008"],
+      "relatedEpic": ["EPIC-008"],
       "touches": {
         "entities": [],
         "endpoints": ["POST /billing/", "GET /billing/"],
@@ -64,7 +64,7 @@ Write `<uc-folder>/business-rules.json` conforming to `.claude/schemas/business-
 - **id / seq / rule** — copy verbatim from the suggestion.md Business Rules table. `seq` is the numeric part of the id.
 - **category** — one of `auth, validation, workflow, data, ui, routing, integration, other`. Choose the dominant intent.
 - **dependsOn** — the heart of the graph. List only **hard prerequisites**: another BR that must already hold for this one to be meaningful or testable. Canonical cases: a rule that enforces a role depends on the rule that *introduced* that role; a rule validating a field depends on the rule that *created* the entity/field; a routing-change rule depends on the guard rule it modifies. Prefer edges to the **most recent** earlier rule for a given concern. Never create a cycle — edges always point to a strictly lower `seq`. Do **not** list merely thematically-similar rules.
-- **relatedUc** — every `[[UC-XXX]]` referenced in or around the rule.
+- **relatedEpic** — every `[[EPIC-XXX]]` referenced in or around the rule.
 - **touches** — the anchors used for cross-highlighting. Populate only what the rule genuinely governs:
   - `entities` must match names in ClassDiagram.md; `endpoints` are `METHOD /path` from openapi.yaml; `slices` end in `Feature`; `components` end in `Component`; `selectors` come from selectors.yaml; `mockups` are real filenames under `mockups/`; `tests` are short descriptions of the rows under this BR's section in testState.md.
   - Leave an array empty rather than guessing.

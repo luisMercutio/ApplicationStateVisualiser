@@ -6,6 +6,7 @@ const http = require('http');
 const { execFile } = require('child_process');
 const { WebSocketServer } = require('ws');
 const pty = require('node-pty');
+const dbStore = require('./db-store');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -28,254 +29,7 @@ function clampInt(value, fallback, min, max) {
 app.use(cors());
 app.use(express.json());
 
-function getArchBase(root) {
-  return path.resolve(root, '.claude', 'architecture');
-}
-
-function safePath(root, filePath) {
-  const base = getArchBase(root);
-  const resolved = path.resolve(base, filePath);
-  if (!resolved.startsWith(base + path.sep) && resolved !== base) {
-    throw new Error('Invalid path');
-  }
-  return resolved;
-}
-
-async function buildTree(dir, rel) {
-  let entries;
-  try {
-    entries = await fs.readdir(dir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const items = [];
-  for (const e of entries) {
-    const relPath = rel ? `${rel}/${e.name}` : e.name;
-    if (e.isDirectory()) {
-      const children = await buildTree(path.join(dir, e.name), relPath);
-      items.push({ name: e.name, path: relPath, type: 'directory', children });
-    } else {
-      items.push({ name: e.name, path: relPath, type: 'file' });
-    }
-  }
-  return items;
-}
-
-app.get('/api/tree', async (req, res) => {
-  const { root } = req.query;
-  if (!root) return res.status(400).json({ error: 'root required' });
-  try {
-    const base = getArchBase(root);
-    const tree = await buildTree(base, '');
-    res.json({ tree });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/file', async (req, res) => {
-  const { root, path: filePath } = req.query;
-  if (!root || !filePath) return res.status(400).json({ error: 'root and path required' });
-  try {
-    const abs = safePath(root, filePath);
-    const content = await fs.readFile(abs, 'utf-8');
-    res.type('text/plain').send(content);
-  } catch (err) {
-    res.status(404).json({ error: err.message });
-  }
-});
-
-app.put('/api/file', async (req, res) => {
-  const { root, path: filePath } = req.query;
-  const { content } = req.body || {};
-  if (!root || !filePath) return res.status(400).json({ error: 'root and path required' });
-  if (typeof content !== 'string') return res.status(400).json({ error: 'content (string) required' });
-  try {
-    const abs = safePath(root, filePath);
-    await fs.mkdir(path.dirname(abs), { recursive: true });
-    await fs.writeFile(abs, content, 'utf-8');
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/mockup', async (req, res) => {
-  const { root, path: filePath } = req.query;
-  if (!root || !filePath) return res.status(400).json({ error: 'root and path required' });
-  try {
-    const abs = safePath(root, filePath);
-    const content = await fs.readFile(abs, 'utf-8');
-    res.type('text/html').send(content);
-  } catch (err) {
-    res.status(404).json({ error: err.message });
-  }
-});
-
 app.get('/api/ping', (_req, res) => res.json({ ok: true }));
-
-app.get('/api/config', (_req, res) => {
-  res.json({ standardUrl: process.env.STANDARD_URL || null });
-});
-
-// ── BR positions (app-owned layout for the Business Rule graph) ───────────────
-// Stored next to the architecture data so it travels with the target project,
-// but written/owned by the viewer so /uc-generate never clobbers it.
-
-// BR-first rule index (.claude/rules/_index.json) — the fold input for composed views.
-app.get('/api/rules', async (req, res) => {
-  const { root } = req.query;
-  if (!root) return res.status(400).json({ error: 'root required' });
-  try {
-    const abs = path.resolve(root, '.claude', 'rules', '_index.json');
-    const content = await fs.readFile(abs, 'utf-8');
-    res.json(JSON.parse(content));
-  } catch {
-    res.json([]); // no rules extracted yet
-  }
-});
-
-app.get('/api/br-positions', async (req, res) => {
-  const { root } = req.query;
-  if (!root) return res.status(400).json({ error: 'root required' });
-  try {
-    const abs = safePath(root, 'br-positions.json');
-    const content = await fs.readFile(abs, 'utf-8');
-    res.json(JSON.parse(content));
-  } catch {
-    res.json({}); // no positions yet
-  }
-});
-
-app.put('/api/br-positions', async (req, res) => {
-  const { root } = req.query;
-  if (!root) return res.status(400).json({ error: 'root required' });
-  try {
-    const abs = safePath(root, 'br-positions.json');
-    await fs.mkdir(path.dirname(abs), { recursive: true });
-    await fs.writeFile(abs, JSON.stringify(req.body ?? {}, null, 2), 'utf-8');
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ── BR display order (app-owned, drag-to-reorder list) ────────────────────────
-// An array of rule names in the user's chosen order. Same ownership rules as
-// br-positions: stored with the target project, written only by the viewer.
-app.get('/api/br-order', async (req, res) => {
-  const { root } = req.query;
-  if (!root) return res.status(400).json({ error: 'root required' });
-  try {
-    const abs = safePath(root, 'br-order.json');
-    const content = await fs.readFile(abs, 'utf-8');
-    res.json(JSON.parse(content));
-  } catch {
-    res.json([]); // no custom order yet
-  }
-});
-
-app.put('/api/br-order', async (req, res) => {
-  const { root } = req.query;
-  if (!root) return res.status(400).json({ error: 'root required' });
-  if (!Array.isArray(req.body)) return res.status(400).json({ error: 'body must be an array of rule names' });
-  try {
-    const abs = safePath(root, 'br-order.json');
-    await fs.mkdir(path.dirname(abs), { recursive: true });
-    await fs.writeFile(abs, JSON.stringify(req.body, null, 2), 'utf-8');
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ── Methodology (this repo's own .claude dir: agents, commands, schemas, scripts) ──
-// The .claude dir IS the single source of truth: Claude Code auto-discovers it,
-// and the app serves the very same files (no copies, no build step). Override the
-// location with CLAUDE_DIR if needed. Endpoints stay named /api/resources/* for
-// backwards compatibility with saved layouts.
-const METHODOLOGY_HIDE = new Set(['settings.local.json']);
-
-function claudeBase() {
-  return path.resolve(__dirname, process.env.CLAUDE_DIR || '.claude');
-}
-
-function safeResourcePath(filePath) {
-  const base = claudeBase();
-  const resolved = path.resolve(base, filePath);
-  if (!resolved.startsWith(base + path.sep) && resolved !== base) {
-    throw new Error('Invalid path');
-  }
-  return resolved;
-}
-
-async function copyDir(src, dest, rel = '') {
-  await fs.mkdir(dest, { recursive: true });
-  const entries = await fs.readdir(src, { withFileTypes: true });
-  const out = [];
-  for (const e of entries) {
-    const s = path.join(src, e.name);
-    const d = path.join(dest, e.name);
-    const r = rel ? `${rel}/${e.name}` : e.name;
-    if (e.isDirectory()) out.push(...await copyDir(s, d, r));
-    else { await fs.copyFile(s, d); out.push(r); }
-  }
-  return out;
-}
-
-// Push the methodology (agents + commands) into a target project's .claude/.
-app.post('/api/sync-methodology', async (req, res) => {
-  const { target } = req.body || {};
-  if (!target) return res.status(400).json({ error: 'target required' });
-  try {
-    const stat = await fs.stat(target);
-    if (!stat.isDirectory()) return res.status(400).json({ error: 'target is not a directory' });
-    const claudeDir = path.resolve(target, '.claude');
-    const copied = [];
-    for (const sub of ['agents', 'commands']) {
-      copied.push(...await copyDir(path.join(claudeBase(), sub), path.join(claudeDir, sub), sub));
-    }
-    res.json({ ok: true, target, count: copied.length, copied });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/resources/tree', async (_req, res) => {
-  try {
-    const tree = (await buildTree(claudeBase(), '')).filter((n) => !METHODOLOGY_HIDE.has(n.name));
-    res.json({ tree });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-app.get('/api/resources/file', async (req, res) => {
-  const { path: filePath } = req.query;
-  if (!filePath) return res.status(400).json({ error: 'path required' });
-  try {
-    const abs = safeResourcePath(filePath);
-    const content = await fs.readFile(abs, 'utf-8');
-    res.type('text/plain').send(content);
-  } catch (err) {
-    res.status(404).json({ error: err.message });
-  }
-});
-
-app.put('/api/resources/file', async (req, res) => {
-  const { path: filePath } = req.query;
-  const { content } = req.body || {};
-  if (!filePath) return res.status(400).json({ error: 'path required' });
-  if (typeof content !== 'string') return res.status(400).json({ error: 'content (string) required' });
-  try {
-    const abs = safeResourcePath(filePath);
-    await fs.mkdir(path.dirname(abs), { recursive: true });
-    await fs.writeFile(abs, content, 'utf-8');
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
 // ── Layouts ──────────────────────────────────────────────────────────────────
 
@@ -358,6 +112,140 @@ app.get('/api/tmux/sessions', (_req, res) => {
   );
 });
 
+// ── Database connections (Store A + target B…Z registry) ──────────────────────
+// Store A is the viewer's own MariaDB database; it holds the encrypted profiles
+// for the target application databases whose state we display. The selector in
+// the UI flips which target the browse endpoints read from. All handlers funnel
+// errors through a shared helper so a downed MariaDB surfaces as 503, a bad body
+// as 400, and everything else as 500.
+function sendDbError(res, err) {
+  res.status(err.status || 500).json({ error: err.message });
+}
+
+app.get('/api/db/status', (_req, res) => res.json(dbStore.status()));
+
+app.get('/api/db/connections', async (_req, res) => {
+  try { res.json(await dbStore.listConnections()); } catch (err) { sendDbError(res, err); }
+});
+
+app.post('/api/db/connections', async (req, res) => {
+  try { res.status(201).json(await dbStore.createConnection(req.body || {})); } catch (err) { sendDbError(res, err); }
+});
+
+// Test arbitrary (unsaved) parameters — lets the form verify before saving.
+app.post('/api/db/connections/test', async (req, res) => {
+  try { res.json(await dbStore.testParams(req.body || {})); } catch (err) { sendDbError(res, err); }
+});
+
+app.put('/api/db/connections/:id', async (req, res) => {
+  try {
+    const updated = await dbStore.updateConnection(req.params.id, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'connection not found' });
+    res.json(updated);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/db/connections/:id', async (req, res) => {
+  try {
+    const ok = await dbStore.deleteConnection(req.params.id);
+    if (!ok) return res.status(404).json({ error: 'connection not found' });
+    res.json({ ok: true });
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.post('/api/db/connections/:id/test', async (req, res) => {
+  try { res.json(await dbStore.testExisting(req.params.id)); } catch (err) { sendDbError(res, err); }
+});
+
+// Active selection — which target the app currently retrieves state from.
+app.get('/api/db/active', async (_req, res) => {
+  try { res.json({ activeId: await dbStore.getActiveId() }); } catch (err) { sendDbError(res, err); }
+});
+
+app.put('/api/db/active', async (req, res) => {
+  try { res.json({ activeId: await dbStore.setActiveId((req.body || {}).id ?? null) }); } catch (err) { sendDbError(res, err); }
+});
+
+// Browse the target: list its tables, then preview rows of one.
+app.get('/api/db/connections/:id/tables', async (req, res) => {
+  try { res.json({ tables: await dbStore.listTables(req.params.id) }); } catch (err) { sendDbError(res, err); }
+});
+
+app.get('/api/db/connections/:id/tables/:table/rows', async (req, res) => {
+  try { res.json(await dbStore.previewTable(req.params.id, req.params.table, req.query.limit)); } catch (err) { sendDbError(res, err); }
+});
+
+// ── Application data: Epics + Business Rules (in the target app's own DB) ──────
+// Every route is scoped to a connection id: the viewer flips the active
+// connection to switch which application's epics/BRs it reads and edits. The
+// tables are auto-provisioned in the target's DB on first touch.
+app.get('/api/db/connections/:id/epics', async (req, res) => {
+  try { res.json({ epics: await dbStore.listEpics(req.params.id) }); } catch (err) { sendDbError(res, err); }
+});
+
+app.post('/api/db/connections/:id/epics', async (req, res) => {
+  try { res.status(201).json(await dbStore.createEpic(req.params.id, req.body || {})); } catch (err) { sendDbError(res, err); }
+});
+
+app.put('/api/db/connections/:id/epics/:epicId', async (req, res) => {
+  try {
+    const updated = await dbStore.updateEpic(req.params.id, req.params.epicId, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'epic not found' });
+    res.json(updated);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/db/connections/:id/epics/:epicId', async (req, res) => {
+  try {
+    const ok = await dbStore.deleteEpic(req.params.id, req.params.epicId);
+    if (!ok) return res.status(404).json({ error: 'epic not found' });
+    res.json({ ok: true });
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.get('/api/db/connections/:id/business-rules', async (req, res) => {
+  try { res.json({ rules: await dbStore.listBusinessRules(req.params.id) }); } catch (err) { sendDbError(res, err); }
+});
+
+app.post('/api/db/connections/:id/business-rules', async (req, res) => {
+  try { res.status(201).json(await dbStore.createBusinessRule(req.params.id, req.body || {})); } catch (err) { sendDbError(res, err); }
+});
+
+app.put('/api/db/connections/:id/business-rules/:brId', async (req, res) => {
+  try {
+    const updated = await dbStore.updateBusinessRule(req.params.id, req.params.brId, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'business rule not found' });
+    res.json(updated);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/db/connections/:id/business-rules/:brId', async (req, res) => {
+  try {
+    const ok = await dbStore.deleteBusinessRule(req.params.id, req.params.brId);
+    if (!ok) return res.status(404).json({ error: 'business rule not found' });
+    res.json({ ok: true });
+  } catch (err) { sendDbError(res, err); }
+});
+
+// ── Methodology files in the master DB (agents + commands) ────────────────────
+// The master DB is the source of truth; saves also write through to .claude/ on
+// disk so Claude Code keeps seeing the live copy. Editable from within the app.
+app.get('/api/methodology', async (_req, res) => {
+  try { res.json({ files: await dbStore.listMethodologyFiles() }); } catch (err) { sendDbError(res, err); }
+});
+
+app.get('/api/methodology/:kind/:name', async (req, res) => {
+  try {
+    const file = await dbStore.getMethodologyFile(req.params.kind, req.params.name);
+    if (!file) return res.status(404).json({ error: 'file not found' });
+    res.json(file);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.put('/api/methodology/:kind/:name', async (req, res) => {
+  try { res.json(await dbStore.saveMethodologyFile(req.params.kind, req.params.name, (req.body || {}).content)); } catch (err) { sendDbError(res, err); }
+});
+
 // Serve the SPA + API over one HTTP server so the WebSocket can share the port.
 const server = http.createServer(app);
 
@@ -434,3 +322,10 @@ wss.on('connection', (ws, req) => {
 
 server.listen(PORT, () =>
   console.log(`UC Arch Viewer server on http://localhost:${PORT} (tmux bridge → WSL:${WSL_DISTRO})`));
+
+// Provision Store A in the background. A downed MariaDB must not take the whole
+// viewer offline — the /api/db/* routes report the failure as 503 and the rest
+// of the app (file/tree/terminal endpoints) keeps working.
+dbStore.init()
+  .then(() => console.log(`Store A ready → MariaDB ${dbStore.status().store.host}:${dbStore.status().store.port}/${dbStore.status().store.database}`))
+  .catch(err => console.warn(`Store A unavailable (db features disabled): ${err.message}`));

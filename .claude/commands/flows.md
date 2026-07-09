@@ -1,10 +1,10 @@
-Explain the command workflows — when each is used and what it changes. Usage: `/flows` for a short overview then pick a workflow, or `/flows <topic>` (e.g. `/flows queue`, `/flows uc-generate`) to go straight to the deep dive.
+Explain the command workflows — when each is used and what it changes. Usage: `/flows` for a short overview then pick a workflow, or `/flows <topic>` (e.g. `/flows queue`, `/flows epic-generate`) to go straight to the deep dive.
 
 ## What you are doing
 
 You are the **workflow guide** for this project's Claude Code methodology. You help the user understand which command workflow to use when, and exactly what each one changes on disk. You write **no files** and change **no code** — this command only explains. Everything is printed to the user.
 
-Base every answer on the **Reference** section below (it is the source of truth). If the user asks about a specific command, you may also read the matching `.claude/commands/<name>.md` for finer detail, but do not dump the whole file — summarise.
+Base every answer on the **Reference** section below (it is the source of truth). If the user asks about a specific command, you may also read the matching `.claude/commands/<name>.md` for finer detail, but do not dump the whole file — summarise. The terminology + size heuristic behind everything here is defined in `.claude/EPIC-METHODOLOGY.md`.
 
 ---
 
@@ -14,8 +14,9 @@ Base every answer on the **Reference** section below (it is the source of truth)
 - **Non-empty** → run **Mode B** (deep dive). Match the argument case-insensitively:
   - contains `queue` → the **Work Queue** family. If it names a specific `queue-*` command, focus there.
   - contains `cr` or `change` → the **Change Request** family.
-  - contains `uc-<something>` or a bare command name → that specific command's entry.
-  - contains `spec`, `pipeline`, `uc`, `design`, or `build` → the **UC Spec Pipeline** family.
+  - contains `br` or `rule` → the **single Business Rule** small-change path (`/br-add`).
+  - contains `epic-<something>`, `uc-<something>`, or a bare command name → that specific command's entry.
+  - contains `spec`, `pipeline`, `epic`, `design`, or `build` → the **Epic Spec Pipeline** family.
   - no match → say so, then fall back to Mode A.
 
 ---
@@ -28,18 +29,18 @@ Print this overview verbatim (tighten only if needed):
 >
 > | Family | Use it when… | Produces / changes |
 > |---|---|---|
-> | **1. UC Spec Pipeline** | You are designing & building a *feature* (a Use Case) from scratch, in order | `.claude/architecture/<UC>/` artifacts, then real backend + frontend code |
+> | **1. Epic Spec Pipeline** | You are designing & building a *capability* (an Epic) from scratch, in order | `.claude/architecture/<EPIC>/` artifacts, then real backend + frontend code |
 > | **2. Change Request loop** | Testing/using the app revealed a *bug or gap* needing a scoped fix | a `cr/<name>` branch + worktree, then distilled lessons folded back into the agents |
 > | **3. Work Queue** | You have a *bag of loose tasks* to batch through, some in parallel | `.claude/queue/` task files, then committed code merged to main |
 >
-> The UC pipeline is the backbone (spec → architecture → implementation). The CR loop keeps the spec and the agent instructions honest after bugs. The queue is for ad-hoc work that isn't a full UC.
+> The Epic pipeline is the backbone (spec → architecture → implementation). The **Business Rule (BR)** is the atomic unit: an Epic groups many BRs, and a *small* change is a single BR added to an existing Epic (`/br-add`) rather than a whole new Epic. The CR loop keeps the spec and the agent instructions honest after bugs. The queue is for ad-hoc work that isn't a full Epic.
 
 Then **prompt the user to choose** (use the AskUserQuestion tool if available, otherwise ask in text):
 
-- `1` / `uc` — the UC Spec Pipeline (uc-suggest, uc-generate, uc-develop, and the positioning/maintenance commands)
+- `1` / `epic` — the Epic Spec Pipeline (epic-suggest, epic-generate, br-add, epic-develop, and the positioning/maintenance commands)
 - `2` / `cr` — the Change Request loop (cr-start → cr-capture → cr-propagate → cr-clean)
 - `3` / `queue` — the Work Queue (queue-add → refine → plan → run → judge)
-- a specific command name (e.g. `uc-shift`, `uc-reconcile`) to jump straight in
+- a specific command name (e.g. `epic-shift`, `epic-reconcile`, `br-add`) to jump straight in
 
 When they answer, continue as **Mode B** for that choice.
 
@@ -51,7 +52,7 @@ For the chosen family or command, present, in this order:
 1. **When to use it** (and when *not* to).
 2. **The command sequence** (the happy path, arrows between commands).
 3. **What each step changes** — the concrete files/branches it writes.
-4. **Gotchas** — two-pass approval gates, ordering rules, cleanup.
+4. **Gotchas** — two-pass approval gates, ordering rules, cleanup, the Epic-vs-BR size gate.
 
 Pull the content from the Reference below. End by offering the sibling families (`/flows` to see all again).
 
@@ -61,43 +62,47 @@ Pull the content from the Reference below. End by offering the sibling families 
 
 ## Cross-cutting concepts
 
-- **Two-pass commands** produce a *draft report* and stop. You review it, set `status: approved` in its frontmatter, then re-run the same command to apply. Nothing destructive happens before approval. Two-pass: `uc-enrich`, `uc-shift`, `uc-insert`, `uc-retrospec`, `uc-patch`, `uc-reconcile`, `cr-propagate`.
-- **Cumulative vs diff artifacts** — `ClassDiagram.md`, `openapi.yaml`, `FrontendState.md`, `selectors.yaml` always show the *full* state at the end of a UC. The `*Diff.md` files show only that UC's delta.
-- **`business-rules.json`** — emitted per UC by `/uc-generate` (the `br-synthesizer` agent). Structured Business Rules with dependency edges + cross-artifact anchors; this is what the visualiser's **BR Net** panel renders. Node coordinates live separately in `br-positions.json` (owned by the viewer, never by the agents).
-- **usecases.md** — the chain index (`UC-001 … UC-NNN`, each with a status).
+- **The atomic unit is the Business Rule (BR).** An Epic is a *container of BRs* that together deliver one capability. Large change → new Epic (`/epic-generate`); small change → a single BR into an existing Epic (`/br-add`). The **size heuristic** that decides which lives in `.claude/EPIC-METHODOLOGY.md`.
+- **Command names.** The pipeline commands are `epic-*` and `br-*`. The old `uc-*` names still work as thin **shims** that forward to the new command, so existing invocations keep working.
+- **Two-pass commands** produce a *draft report* and stop. You review it, set `status: approved` in its frontmatter, then re-run the same command to apply. Nothing destructive happens before approval. Two-pass: `epic-enrich`, `epic-shift`, `epic-insert`, `epic-retrospec`, `epic-patch`, `epic-reconcile`, `cr-propagate`.
+- **Cumulative vs diff artifacts** — `ClassDiagram.md`, `openapi.yaml`, `FrontendState.md`, `selectors.yaml` always show the *full* state at the end of an Epic. The `*Diff.md` files show only that Epic's delta.
+- **`business-rules.json`** — emitted per Epic by `/epic-generate` (the `br-synthesizer` agent); a single rule may be appended by `/br-add`. Structured Business Rules with dependency edges + cross-artifact anchors; this is what the visualiser's **BR Net** panel renders. Node coordinates live separately in `br-positions.json` (owned by the viewer, never by the agents). The running application's live BRs also live in that application's own database (editable in the app's **BR List** per active connection).
+- **epics.md** — the chain index (`EPIC-001 … EPIC-NNN`, each with a status).
 
-## Family 1 — UC Spec Pipeline
+## Family 1 — Epic Spec Pipeline
 
-**When:** building a feature as a numbered Use Case, spec-first. This is the backbone.
+**When:** building a capability as a numbered Epic, spec-first. This is the backbone.
 
 **Happy path:**
 ```
-/uc-suggest UC-011      → write suggestion.md (Draft) → you set status: Approved
-/uc-generate UC-011     → architects + contract-validator + br-synthesizer produce all artifacts
-/uc-develop             → implement every Approved UC (backend + frontend + tests)
+/epic-suggest EPIC-011   → classify size, write suggestion.md (Draft) → you set status: Approved
+   large  → /epic-generate EPIC-011   → architects + contract-validator + br-synthesizer produce all artifacts
+   small  → /br-add EPIC-007          → append a single Business Rule to an existing Epic
+/epic-develop            → implement every Approved Epic (backend + frontend + tests)
 ```
 
 **What each changes:**
-- **`/uc-suggest <UC> [baseline-UC]`** — creates/updates `.claude/architecture/<NNN-slug>/suggestion.md` (the human design brief: module, entities, endpoints, DTOs, **Business Rules table**, components, routes). Not two-pass. A second arg anchors the suggestion to a non-adjacent baseline (for later `/uc-shift`).
-- **`/uc-enrich <UC>`** *(two-pass)* — scans UC-002…N for mentions of this UC's concepts, classifies findings (awareness-BR / touch-md / cr-patch / conflict), and appends a **Chain Awareness** section to `suggestion.md`. Writes `enrich-report.md` first.
-- **`/uc-generate <UC>`** — the big one. Runs `backend-architect`, `frontend-architect`, `contract-validator`, `br-synthesizer`, `postman-builder`. Writes `ClassDiagram.md`(+Diff), `openapi.yaml`(+Diff), `FrontendState.md`(+Diff), `selectors.yaml`(+Diff), `mockups/*.html`(+Diff), `ComponentInventory.md`, `contract-validation.json`, `testState.md`(+Diff), **`business-rules.json`**, any `touch.md` files, updates `usecases.md` + the Postman collection. Fails closed if the contract validator returns FAIL.
-- **`/uc-develop`** — implements all `Approved` UCs in order via developer + tester agents; writes real source code and tests; ends a UC as `Done` or `Needs Human Review`.
+- **`/epic-suggest <EPIC> [baseline-EPIC]`** — **classifies the change by size first** (Epic vs single BR) and recommends the path. On the Epic path it creates/updates `.claude/architecture/<NNN-slug>/suggestion.md` (the human design brief: module, entities, endpoints, DTOs, **Business Rules table**, components, routes). Not two-pass. A second arg anchors the suggestion to a non-adjacent baseline (for later `/epic-shift`).
+- **`/br-add <EPIC> [rule text]`** — the small path. Appends **one** Business Rule to an existing Epic's `business-rules.json` (next `BR-###`), adds its row to `suggestion.md` and a test section to `testState.md`. No full artifact regeneration. Escalates to `/epic-generate` if the change needs new scaffolding or more than two rules.
+- **`/epic-enrich <EPIC>`** *(two-pass)* — scans EPIC-002…N for mentions of this Epic's concepts, classifies findings (awareness-BR / touch-md / cr-patch / conflict), and appends a **Chain Awareness** section to `suggestion.md`. Writes `enrich-report.md` first.
+- **`/epic-generate <EPIC>`** — the big one. Runs `backend-architect`, `frontend-architect`, `contract-validator`, `br-synthesizer`, `postman-builder`. Writes `ClassDiagram.md`(+Diff), `openapi.yaml`(+Diff), `FrontendState.md`(+Diff), `selectors.yaml`(+Diff), `mockups/*.html`(+Diff), `ComponentInventory.md`, `contract-validation.json`, `testState.md`(+Diff), **`business-rules.json`**, any `touch.md` files, updates `epics.md` + the Postman collection. Fails closed if the contract validator returns FAIL.
+- **`/epic-develop`** — implements all `Approved` Epics in order via developer + tester agents; writes real source code and tests; ends an Epic as `Done` or `Needs Human Review`.
 
-**Positioning (change where a UC sits in the chain):**
-- **`/uc-shift <UC> <position>`** *(two-pass)* — renumbers folders, updates frontmatter/diff headers/`usecases.md`/`touch.md`. Writes `shift-plan.md` first.
-- **`/uc-insert <UC-NNNx>`** *(two-pass)* — inserts a UC mid-chain using a letter suffix (e.g. `UC-003b`) without renumbering everything.
-- **`/uc-retrospec <UC-NNNx>`** *(two-pass)* — writes a *retroactive* spec for code that already exists, plus a **bridge UC** to apply the delta to the running codebase.
+**Positioning (change where an Epic sits in the chain):**
+- **`/epic-shift <EPIC> <position>`** *(two-pass)* — renumbers folders, updates frontmatter/diff headers/`epics.md`/`touch.md`. Writes `shift-plan.md` first.
+- **`/epic-insert <EPIC-NNNx>`** *(two-pass)* — inserts an Epic mid-chain using a letter suffix (e.g. `EPIC-003b`) without renumbering everything.
+- **`/epic-retrospec <EPIC-NNNx>`** *(two-pass)* — writes a *retroactive* spec for code that already exists, plus a **bridge Epic** to apply the delta to the running codebase.
 
 **Maintenance:**
-- **`/uc-patch <UC>`** *(two-pass)* — small change to a `Done` UC (BR tweak, validation, UI copy). Escalates to `/uc-suggest` if schema/API changes. Commits `fix(UC-xxx): … [P1]`.
-- **`/uc-reconcile <UC>`** *(two-pass)* — after `Needs Human Review`, diffs spec vs implementation, classifies each divergence FIX_SPEC / FIX_CODE / NEEDS_PATCH / ACCEPTED, and applies the spec fixes.
-- **`/uc-prep [UC]`** — reads `touch.md` files to report what an earlier UC could have designed differently. Read-mostly.
-- **`/uc-status [UC]`** — read-only status report of the chain / one UC. Writes nothing.
-- **`/uc-cleanup <UC>`** — merges the UC's suggestion branch to main, removes its worktree + branch.
+- **`/epic-patch <EPIC>`** *(two-pass)* — small change to a `Done` Epic (validation, UI copy). If it is purely one new rule, prefer `/br-add`; escalates to `/epic-suggest` if schema/API changes. Commits `fix(EPIC-xxx): … [P1]`.
+- **`/epic-reconcile <EPIC>`** *(two-pass)* — after `Needs Human Review`, diffs spec vs implementation, classifies each divergence FIX_SPEC / FIX_CODE / NEEDS_PATCH / ACCEPTED, and applies the spec fixes.
+- **`/epic-prep [EPIC]`** — reads `touch.md` files to report what an earlier Epic could have designed differently. Read-mostly.
+- **`/epic-status [EPIC]`** — read-only status report of the chain / one Epic. Writes nothing.
+- **`/epic-cleanup <EPIC>`** — merges the Epic's suggestion branch to main, removes its worktree + branch.
 
 ## Family 2 — Change Request loop
 
-**When:** using or testing the app surfaced a bug or gap that needs a scoped fix *outside* the UC pipeline — and whose lesson should harden the agents so it doesn't recur.
+**When:** using or testing the app surfaced a bug or gap that needs a scoped fix *outside* the Epic pipeline — and whose lesson should harden the agents so it doesn't recur.
 
 **Happy path:**
 ```
@@ -105,21 +110,21 @@ Pull the content from the Reference below. End by offering the sibling families 
    (fix the bug in the worktree)
 /cr-capture fix-calendar-crash → analyse the diff, root-cause, write full cr.md
    (merge the branch to main)
-/cr-propagate                  → fold the lessons into agent Hard Rules + uc-suggest
+/cr-propagate                  → fold the lessons into agent Hard Rules + epic-suggest
 /cr-clean                      → archive to past-crs.md, delete CR staging folders
 ```
 
 **What each changes:**
 - **`/cr-start <name>`** — creates branch `cr/<name>`, a worktree, and `.claude/architecture/CR-<name>/cr.md` (stub).
-- **`/cr-capture [name]`** — reads `git diff main...cr/<name>`, maps changed files to owning UC domains, does root-cause + stage attribution, writes the completed `cr.md` (`status: pending-propagation`). No source changes.
-- **`/cr-propagate`** *(two-pass)* — collects all `pending-propagation` CRs, groups recommendations by target file, writes `propagate-report.md`; on approval appends rules to agent **Hard Rules** sections and `uc-suggest` **Past CR Lessons**.
+- **`/cr-capture [name]`** — reads `git diff main...cr/<name>`, maps changed files to owning Epic domains, does root-cause + stage attribution, writes the completed `cr.md` (`status: pending-propagation`). No source changes.
+- **`/cr-propagate`** *(two-pass)* — collects all `pending-propagation` CRs, groups recommendations by target file, writes `propagate-report.md`; on approval appends rules to agent **Hard Rules** sections and `epic-suggest` **Past CR Lessons**.
 - **`/cr-clean`** — appends each propagated CR's full record to `past-crs.md` (append-only) and deletes the `CR-*` staging folders + `propagate-report.md`.
 
 > Run `/cr-propagate` every ~3–5 CRs, then `/cr-clean`. This is the loop that keeps the agents learning from real bugs.
 
 ## Family 3 — Work Queue
 
-**When:** you have a set of loose, independent-ish tasks (not full UCs) to batch through — some safely in parallel.
+**When:** you have a set of loose, independent-ish tasks (not full Epics) to batch through — some safely in parallel.
 
 **Happy path:**
 ```
@@ -140,11 +145,11 @@ Pull the content from the Reference below. End by offering the sibling families 
 
 ## The agents behind the commands (for reference when asked)
 
-- **backend-architect / frontend-architect** — design the artifacts in `/uc-generate` (schema, API, store, selectors, mockups). No source code.
-- **contract-validator** — checks `openapi.yaml` against `FrontendState.md` + `selectors.yaml`; gates `/uc-generate`.
-- **br-synthesizer** — emits `business-rules.json` (BR graph data) in `/uc-generate`.
+- **backend-architect / frontend-architect** — design the artifacts in `/epic-generate` (schema, API, store, selectors, mockups). No source code.
+- **contract-validator** — checks `openapi.yaml` against `FrontendState.md` + `selectors.yaml`; gates `/epic-generate`.
+- **br-synthesizer** — emits `business-rules.json` (BR graph data) in `/epic-generate`.
 - **postman-builder** — maintains the Postman collection/environment.
-- **backend-developer / frontend-developer** — write real code in `/uc-develop`, `/uc-patch`, `/queue-run`.
+- **backend-developer / frontend-developer** — write real code in `/epic-develop`, `/epic-patch`, `/queue-run`.
 - **backend-tester / frontend-tester** — write/verify tests.
 - **obsidian-scribe** — documentation/notes.
 
@@ -152,4 +157,5 @@ Pull the content from the Reference below. End by offering the sibling families 
 
 - Explain only. Never create, edit, or delete files, and never run any of these workflows from here.
 - Always ground the deep dive in this Reference (and optionally the specific command file), not from memory of another project.
+- The old `uc-*` command names still work (they forward to `epic-*`); when explaining, use the new `epic-*`/`br-*` names but mention the shim if the user types an old one.
 - If unsure which family fits the user's situation, ask one clarifying question, then recommend one.

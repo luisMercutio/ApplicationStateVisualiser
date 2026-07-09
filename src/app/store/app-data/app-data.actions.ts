@@ -1,0 +1,31 @@
+import { createActionGroup, emptyProps, props } from '@ngrx/store';
+import { AppBusinessRule, AppBusinessRuleInput, Epic, EpicInput } from '../../models/app-data.model';
+
+// Epics + Business Rules for the ACTIVE application database. Every mutating
+// action carries the connection id it targets so the effects never race against
+// a change of active connection.
+export const AppDataActions = createActionGroup({
+  source: 'AppData',
+  events: {
+    'Load': props<{ connectionId: string }>(),
+    'Load Success': props<{ connectionId: string; epics: Epic[]; rules: AppBusinessRule[] }>(),
+    'Load Failure': props<{ error: string }>(),
+    'Clear': emptyProps(), // no active connection
+
+    'Create Epic': props<{ connectionId: string; input: EpicInput }>(),
+    'Create Epic Success': props<{ epic: Epic }>(),
+    'Update Epic': props<{ connectionId: string; epicId: string; input: EpicInput }>(),
+    'Update Epic Success': props<{ epic: Epic }>(),
+    'Delete Epic': props<{ connectionId: string; epicId: string }>(),
+    'Delete Epic Success': props<{ epicId: string }>(),
+
+    'Create Rule': props<{ connectionId: string; input: AppBusinessRuleInput }>(),
+    'Create Rule Success': props<{ rule: AppBusinessRule }>(),
+    'Update Rule': props<{ connectionId: string; ruleId: string; input: AppBusinessRuleInput }>(),
+    'Update Rule Success': props<{ rule: AppBusinessRule }>(),
+    'Delete Rule': props<{ connectionId: string; ruleId: string }>(),
+    'Delete Rule Success': props<{ ruleId: string }>(),
+
+    'Mutation Failure': props<{ error: string }>(),
+  },
+});

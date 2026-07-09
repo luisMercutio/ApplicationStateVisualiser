@@ -2,7 +2,7 @@ Analyze the diff of a completed change request and write the full cr.md. Usage: 
 
 ## What you are doing
 
-You are reading the diff between the CR branch and main, determining what the change did, which UC domain it touched, what caused the gap in the original design or implementation, and what concrete recommendations should be propagated back into the UC pipeline. The output is a completed `cr.md` that `/cr-propagate` can act on.
+You are reading the diff between the CR branch and main, determining what the change did, which Epic domain it touched, what caused the gap in the original design or implementation, and what concrete recommendations should be propagated back into the Epic pipeline. The output is a completed `cr.md` that `/cr-propagate` can act on.
 
 Run this after the fix is complete and ready to merge — but before or after merging, either works.
 
@@ -44,23 +44,23 @@ Read the full diff output. Note:
 
 ---
 
-## Step 3 — Map to UC domains
+## Step 3 — Map to Epic domains
 
-From the changed file paths, determine which UC(s) own the relevant domain:
+From the changed file paths, determine which Epic(s) own the relevant domain:
 
-- Backend entity/service files → check which UC's `ClassDiagram.md` first introduced those entities. Use glob `.claude/architecture/*/ClassDiagram.md` and scan for the class name.
-- Frontend component/state files → check which UC's `ComponentInventory.md` or `FrontendState.md` first introduced those components/slices.
-- API endpoints added or changed → check which UC's `openapi.yaml` first declared them.
+- Backend entity/service files → check which Epic's `ClassDiagram.md` first introduced those entities. Use glob `.claude/architecture/*/ClassDiagram.md` and scan for the class name.
+- Frontend component/state files → check which Epic's `ComponentInventory.md` or `FrontendState.md` first introduced those components/slices.
+- API endpoints added or changed → check which Epic's `openapi.yaml` first declared them.
 
-Read the matched UC(s)' `suggestion.md`, `ClassDiagramDiff.md`, and `openapiDiff.md` to understand what was originally designed for that domain.
+Read the matched Epic(s)' `suggestion.md`, `ClassDiagramDiff.md`, and `openapiDiff.md` to understand what was originally designed for that domain.
 
 ---
 
 ## Step 4 — Root cause analysis
 
-Compare what the diff actually implements against what the original UC designed. Determine which category the gap falls into:
+Compare what the diff actually implements against what the original Epic designed. Determine which category the gap falls into:
 
-**`suggestion`** — the relevant BR was absent, ambiguous, or wrong in the UC's `suggestion.md`. The architect agents had no signal to design for this. Examples:
+**`suggestion`** — the relevant BR was absent, ambiguous, or wrong in the Epic's `suggestion.md`. The architect agents had no signal to design for this. Examples:
 - A validation rule was never stated as a BR
 - An edge case (overlap, null, concurrent edit) was not mentioned in scope
 - A business invariant was assumed implicit and never written down
@@ -88,7 +88,7 @@ Write a 1–3 sentence root cause explanation and pick the single most culpable 
 
 For each recommendation target, write a specific, actionable item. "None" is a valid answer when a target is not implicated.
 
-**Suggestion checklist item** — a question or check that `/uc-suggest` should ask for future UCs in the same domain. Make it general enough to apply beyond this specific fix:
+**Suggestion checklist item** — a question or check that `/epic-suggest` should ask for future Epics in the same domain. Make it general enough to apply beyond this specific fix:
 - Good: "Ask: What happens if two bookings for the same entity overlap in time?"
 - Bad: "Fix the calendar crash" (too specific, not reusable)
 
@@ -106,13 +106,13 @@ For each recommendation target, write a specific, actionable item. "None" is a v
 
 ---
 
-## Step 5b — Derive missing business rules for existing UCs
+## Step 5b — Derive missing business rules for existing Epics
 
-For each related UC identified in Step 3, read its current `suggestion.md` and ask: **if this UC's suggestion had been written correctly from the start, which BRs would have been present or differently worded to prevent this CR entirely?**
+For each related Epic identified in Step 3, read its current `suggestion.md` and ask: **if this Epic's suggestion had been written correctly from the start, which BRs would have been present or differently worded to prevent this CR entirely?**
 
 Write one BR entry per gap. Each entry must be:
 - **Specific and self-contained** — written as a real BR that could be dropped verbatim into the suggestion's Business Rules table (with a new BR-NNN id)
-- **Scoped to the owning UC** — do not invent BRs that belong to a different UC's domain
+- **Scoped to the owning Epic** — do not invent BRs that belong to a different Epic's domain
 - **Preventive, not descriptive** — phrase it as a rule that constrains behavior, not as a description of what the fix does
 
 Good: `"BR-008: After setup check passes, the app-initializer checks localStorage for a stored refresh token; if one exists it calls POST /auth/refresh — on success tokens are stored and NgRx currentUser is populated via a restoreSession action (no navigation); on failure tokens are cleared; if no token exists the initializer does nothing and AuthGuard redirects to /login."`
@@ -131,7 +131,7 @@ Overwrite `.claude/architecture/CR-<cr-name>/cr.md`:
 ---
 cr-id: CR-<cr-name>
 branch: cr/<cr-name>
-related-ucs: [<UC-NNN>, ...]
+related-epics: [<EPIC-NNN>, ...]
 stage-attributed-to: suggestion | architecture | implementation | testing
 status: pending-propagation
 created: <original created date from stub>
@@ -146,7 +146,7 @@ captured: <today YYYY-MM-DD>
 
 ## Related feature domain
 
-**UC(s):** <UC-NNN> — <UC title>
+**Epic(s):** <EPIC-NNN> — <Epic title>
 **Domain:** <which feature area: auth, bookings, calendar, pricing, etc.>
 
 ## Root cause
@@ -158,19 +158,19 @@ captured: <today YYYY-MM-DD>
 **Stage:** `suggestion` | `architecture` | `implementation` | `testing`
 **Reasoning:** <one sentence explaining why this stage is the root cause, not a downstream symptom.>
 
-## Missing business rules for existing UCs
+## Missing business rules for existing Epics
 
-<For each related UC, list the BR(s) that should have existed in its suggestion.md to prevent this CR. Use the exact BR text that could be added verbatim to that UC's Business Rules table. Or "None — the suggestion BRs were sufficient; the gap was downstream.">
+<For each related Epic, list the BR(s) that should have existed in its suggestion.md to prevent this CR. Use the exact BR text that could be added verbatim to that Epic's Business Rules table. Or "None — the suggestion BRs were sufficient; the gap was downstream.">
 
-| UC | BR id | Rule text |
+| Epic | BR id | Rule text |
 |---|---|---|
-| <UC-NNN> | BR-<NNN> | <full rule text> |
+| <EPIC-NNN> | BR-<NNN> | <full rule text> |
 
 ## Recommendations
 
-### For uc-suggest (checklist question for future UCs in this domain)
+### For epic-suggest (checklist question for future Epics in this domain)
 
-<Specific question to add to the uc-suggest checklist, or "None.">
+<Specific question to add to the epic-suggest checklist, or "None.">
 
 ### For backend architect
 
@@ -216,12 +216,12 @@ If already on main (post-merge), commit directly to main.
 ```
 ## CR Captured — CR-<cr-name>
 
-Related UC(s) : <UC-NNN>: <title>
+Related Epic(s) : <EPIC-NNN>: <title>
 Stage         : <stage-attributed-to>
 Root cause    : <one-sentence summary>
 
 Missing BRs identified for:
-  <list each UC that has at least one BR entry, or "None">
+  <list each Epic that has at least one BR entry, or "None">
 
 Recommendations written for:
   <list each target that has a non-None recommendation>

@@ -32,7 +32,7 @@ For each CR ID in `source-crs`:
 Glob `.claude/architecture/<CR-ID>/cr.md`. If the file is missing, note it as already deleted and skip it — do not stop.
 
 Read the cr.md. Collect:
-- `cr-id`, `related-ucs`, `stage-attributed-to`, `captured`, `propagated` from frontmatter
+- `cr-id`, `related-epics`, `stage-attributed-to`, `captured`, `propagated` from frontmatter
 - **What changed** section body
 - **Root cause** section body
 - **Stage attribution** section body
@@ -50,7 +50,7 @@ For each CR, compose this block:
 
 | | |
 |---|---|
-| **Related UCs** | <related-ucs> |
+| **Related Epics** | <related-epics> |
 | **Stage attributed to** | <stage-attributed-to> |
 | **Captured** | <captured> |
 | **Propagated** | <propagated> |

@@ -53,7 +53,7 @@ Create `.claude/architecture/CR-<cr-name>/cr.md` **in the main working directory
 cr-id: CR-<cr-name>
 branch: cr/<cr-name>
 worktree: <git-root>/cr-<cr-name>
-related-ucs: []
+related-epics: []
 stage-attributed-to: unknown
 status: stub
 created: <today YYYY-MM-DD>

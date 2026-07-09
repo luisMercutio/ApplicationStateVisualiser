@@ -12,13 +12,17 @@ import { ViewType, VIEW_TYPE_LABELS, VIEW_TYPE_LIST } from '../../models/panel.m
   template: `
     <h2 mat-dialog-title>Add Panel</h2>
     <mat-dialog-content>
-      <mat-selection-list [multiple]="true" (selectionChange)="onSelectionChange($event)">
-        @for (vt of viewTypes; track vt) {
-          <mat-list-option [value]="vt" [selected]="selected.has(vt)">
-            {{ labels[vt] }}
-          </mat-list-option>
-        }
-      </mat-selection-list>
+      @if (viewTypes.length) {
+        <mat-selection-list [multiple]="true" (selectionChange)="onSelectionChange($event)">
+          @for (vt of viewTypes; track vt) {
+            <mat-list-option [value]="vt" [selected]="selected.has(vt)">
+              {{ labels[vt] }}
+            </mat-list-option>
+          }
+        </mat-selection-list>
+      } @else {
+        <p class="empty">No feature views are available yet — this page is placeholder scaffolding.</p>
+      }
     </mat-dialog-content>
     <mat-dialog-actions align="end">
       <button mat-button mat-dialog-close>Cancel</button>
@@ -27,6 +31,7 @@ import { ViewType, VIEW_TYPE_LABELS, VIEW_TYPE_LIST } from '../../models/panel.m
   `,
   styles: [`
     mat-dialog-content { min-width: 280px; max-height: 400px; }
+    .empty { color: #888; font-size: 13px; padding: 8px 4px; }
   `],
 })
 export class AddPanelDialogComponent {

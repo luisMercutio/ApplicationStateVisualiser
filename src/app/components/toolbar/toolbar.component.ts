@@ -1,4 +1,4 @@
-import { Component, inject, output } from '@angular/core';
+import { Component, inject, input, output } from '@angular/core';
 import { MatToolbarModule } from '@angular/material/toolbar';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
@@ -7,111 +7,104 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { Store } from '@ngrx/store';
-import { AsyncPipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { selectUsecases } from '../../store/uc/uc.selectors';
-import { selectGlobalUcId } from '../../store/layout/layout.selectors';
-import { LayoutActions } from '../../store/layout/layout.actions';
-import { UcActions } from '../../store/uc/uc.actions';
-import { FilesActions } from '../../store/files/files.actions';
 import { LayoutsActions } from '../../store/layouts/layouts.actions';
 import { selectLayoutNames, selectActiveLayout, selectLayoutSaving } from '../../store/layouts/layouts.selectors';
 import { SaveLayoutDialogComponent } from '../save-layout-dialog/save-layout-dialog.component';
+import { DbSelectorComponent } from '../db-selector/db-selector.component';
+import { AppPage, NAV_PAGES } from '../../models/app-page.model';
 import { filter } from 'rxjs';
 
 @Component({
   selector: 'app-toolbar',
   standalone: true,
   imports: [MatToolbarModule, MatButtonModule, MatIconModule, MatSelectModule,
-            MatFormFieldModule, MatTooltipModule, MatDialogModule, AsyncPipe, FormsModule],
+            MatFormFieldModule, MatTooltipModule, MatDialogModule, FormsModule,
+            DbSelectorComponent],
   template: `
     <mat-toolbar color="primary" class="app-toolbar">
       <mat-icon class="title-icon">account_tree</mat-icon>
-      <span class="title">UC Architecture Viewer</span>
+      <span class="title">Application State Visualiser</span>
 
-      <mat-form-field appearance="outline" class="uc-select" subscriptSizing="dynamic">
-        <mat-label>Active UC</mat-label>
-        <mat-select [ngModel]="globalUcId$ | async" (ngModelChange)="setUc($event)">
-          @for (uc of usecases$ | async; track uc.id) {
-            <mat-option [value]="uc.id">{{ uc.id }} — {{ uc.title }}</mat-option>
-          }
-        </mat-select>
-      </mat-form-field>
+      <!-- Data-source database selector: this IS the project selector -->
+      <app-db-selector></app-db-selector>
 
-      <button mat-icon-button matTooltip="Reload use-cases" (click)="reload()">
-        <mat-icon>refresh</mat-icon>
-      </button>
+      <span class="nav-divider"></span>
+
+      <!-- Page navigation -->
+      @for (nav of navPages; track nav.page) {
+        <button mat-button class="nav-btn" [class.active]="page() === nav.page" (click)="navigate.emit(nav.page)">
+          <mat-icon>{{ nav.icon }}</mat-icon> {{ nav.label }}
+        </button>
+      }
 
       <span class="spacer"></span>
 
-      <!-- Layout management -->
-      <mat-form-field appearance="outline" class="layout-select" subscriptSizing="dynamic">
-        <mat-label>Layout</mat-label>
-        <mat-select [ngModel]="activeLayout()" (ngModelChange)="applyLayout($event)" placeholder="None saved">
-          @for (name of layoutNames(); track name) {
-            <mat-option [value]="name">{{ name }}</mat-option>
-          }
-        </mat-select>
-      </mat-form-field>
+      <!-- Features-page-only: layout management + add panel -->
+      @if (page() === 'features') {
+        <mat-form-field appearance="outline" class="layout-select" subscriptSizing="dynamic">
+          <mat-label>Layout</mat-label>
+          <mat-select [ngModel]="activeLayout()" (ngModelChange)="applyLayout($event)" placeholder="None saved">
+            @for (name of layoutNames(); track name) {
+              <mat-option [value]="name">{{ name }}</mat-option>
+            }
+          </mat-select>
+        </mat-form-field>
 
-      <button mat-icon-button matTooltip="Save current layout as…"
-              [disabled]="layoutSaving()" (click)="openSaveDialog()">
-        <mat-icon>{{ layoutSaving() ? 'hourglass_top' : 'bookmark_add' }}</mat-icon>
-      </button>
+        <button mat-icon-button matTooltip="Save current layout as…"
+                [disabled]="layoutSaving()" (click)="openSaveDialog()">
+          <mat-icon>{{ layoutSaving() ? 'hourglass_top' : 'bookmark_add' }}</mat-icon>
+        </button>
+        <button mat-icon-button matTooltip="Delete selected layout"
+                [disabled]="!activeLayout()" (click)="deleteLayout()">
+          <mat-icon>bookmark_remove</mat-icon>
+        </button>
 
-      <button mat-icon-button matTooltip="Delete selected layout"
-              [disabled]="!activeLayout()" (click)="deleteLayout()">
-        <mat-icon>bookmark_remove</mat-icon>
-      </button>
+        <button mat-stroked-button class="add-btn" (click)="addPanel.emit()">
+          <mat-icon>add</mat-icon> Add Panel
+        </button>
 
-      <span class="divider"></span>
+        <span class="divider"></span>
+      }
 
-      <button mat-stroked-button class="add-btn" (click)="addPanel.emit()">
-        <mat-icon>add</mat-icon> Add Panel
-      </button>
-
-      <button mat-icon-button matTooltip="Change project root" (click)="changeRoot.emit()">
+      <!-- Settings (Methodology editor) -->
+      <button mat-icon-button matTooltip="Settings" [class.active-gear]="page() === 'settings'"
+              (click)="navigate.emit('settings')">
         <mat-icon>settings</mat-icon>
       </button>
     </mat-toolbar>
   `,
   styles: [`
-    .app-toolbar { gap: 8px; }
+    .app-toolbar { gap: 6px; }
     .title-icon { font-size: 24px; }
     .title { font-size: 18px; font-weight: 500; white-space: nowrap; }
-    .uc-select { width: 300px; color: white; --mdc-outlined-text-field-label-text-color: rgba(255,255,255,0.8); }
-    .uc-select ::ng-deep .mat-mdc-select-value { color: white; }
-    .uc-select ::ng-deep .mat-mdc-notched-outline > * { border-color: rgba(255,255,255,0.5) !important; }
-    .layout-select { width: 180px; color: white; --mdc-outlined-text-field-label-text-color: rgba(255,255,255,0.8); }
+    .nav-divider { width: 1px; height: 24px; background: rgba(255,255,255,0.3); margin: 0 6px; }
+    .nav-btn { color: rgba(255,255,255,0.85); }
+    .nav-btn.active { color: white; background: rgba(255,255,255,0.18); }
+    .nav-btn mat-icon { font-size: 18px; width: 18px; height: 18px; margin-right: 2px; }
+    .spacer { flex: 1; }
+    .layout-select { width: 170px; color: white; --mdc-outlined-text-field-label-text-color: rgba(255,255,255,0.8); }
     .layout-select ::ng-deep .mat-mdc-select-value { color: white; }
     .layout-select ::ng-deep .mat-mdc-notched-outline > * { border-color: rgba(255,255,255,0.5) !important; }
-    .spacer { flex: 1; }
     .divider { width: 1px; height: 24px; background: rgba(255,255,255,0.3); margin: 0 4px; }
     .add-btn { color: white; border-color: rgba(255,255,255,0.6); }
+    .active-gear { color: #ffeb3b; }
   `],
 })
 export class ToolbarComponent {
   private store = inject(Store);
   private dialog = inject(MatDialog);
 
-  usecases$ = this.store.select(selectUsecases);
-  globalUcId$ = this.store.select(selectGlobalUcId);
+  page = input<AppPage>('br-list');
+  navigate = output<AppPage>();
+  addPanel = output<void>();
+
+  navPages = NAV_PAGES;
+
   layoutNames = toSignal(this.store.select(selectLayoutNames), { initialValue: [] as string[] });
   activeLayout = toSignal(this.store.select(selectActiveLayout), { initialValue: null });
   layoutSaving = toSignal(this.store.select(selectLayoutSaving), { initialValue: false });
-
-  addPanel = output<void>();
-  changeRoot = output<void>();
-
-  setUc(ucId: string): void {
-    this.store.dispatch(LayoutActions.setGlobalUc({ ucId }));
-  }
-
-  reload(): void {
-    this.store.dispatch(FilesActions.clearCache());
-    this.store.dispatch(UcActions.loadUsecases());
-  }
 
   applyLayout(name: string): void {
     if (name) this.store.dispatch(LayoutsActions.applyLayout({ name }));

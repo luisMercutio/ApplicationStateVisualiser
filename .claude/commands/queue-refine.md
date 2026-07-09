@@ -21,7 +21,7 @@ If none exist: stop — "Queue is empty. Add tasks with `/queue-add` first."
 ## Step 2 — Investigate against the codebase
 
 For each task, and for the queue as a whole, build enough understanding to spot real ambiguities. Use Read / Grep / Glob / the Explore agent to check:
-- Which existing files, components, endpoints, or UC domains the task touches.
+- Which existing files, components, endpoints, or Epic domains the task touches.
 - Whether the task conflicts with or overlaps another queued task.
 - Naming, patterns, and conventions the change must follow (see `.claude/CHEATSHEET.md` and existing code).
 - Anything under-specified: scope boundaries, edge cases, data shape, UX copy, which layer (backend/frontend), enum vs string choices, migration needs.
