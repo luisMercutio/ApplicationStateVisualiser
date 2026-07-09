@@ -111,6 +111,14 @@ interface Group {
     .md-body ::ng-deep code { background: #f5f5f5; padding: 2px 4px; border-radius: 3px; font-size: 12px; }
     .md-body ::ng-deep table { border-collapse: collapse; }
     .md-body ::ng-deep th, .md-body ::ng-deep td { border: 1px solid #e0e0e0; padding: 6px 10px; }
+
+    /* Mobile: a fixed 230px sidebar leaves almost no room for the editor, so
+       stack the file tree above the editor and cap its height. */
+    @media (max-width: 768px) {
+      .res-wrap { flex-direction: column; }
+      .res-tree { width: 100%; max-height: 40%; flex-shrink: 0;
+                  border-right: none; border-bottom: 1px solid #e0e0e0; }
+    }
   `],
 })
 export class MethodologyEditorComponent implements OnInit, OnDestroy {

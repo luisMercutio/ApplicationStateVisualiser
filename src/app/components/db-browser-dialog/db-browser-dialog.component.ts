@@ -83,6 +83,14 @@ import { DbConnection, DbPreview, DbTableInfo } from '../../models/db-connection
     table { width: 100%; }
     th, td { white-space: nowrap; padding: 4px 12px !important; font-size: 12px; }
     .empty { color: rgba(0,0,0,0.5); padding: 24px; text-align: center; }
+
+    /* Mobile: the side-by-side table list + preview is too narrow at phone
+       widths, so stack them — table list on top (capped height), preview below. */
+    @media (max-width: 768px) {
+      mat-dialog-content { height: 76vh; }
+      .browser { grid-template-columns: 1fr; grid-template-rows: auto 1fr; height: calc(76vh - 60px); }
+      .tables { border-right: none; border-bottom: 1px solid rgba(0,0,0,0.12); max-height: 30vh; }
+    }
   `],
 })
 export class DbBrowserDialogComponent {
