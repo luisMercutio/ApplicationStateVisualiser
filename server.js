@@ -518,6 +518,18 @@ subscribeNtfy();
 // Provision Store A in the background. A downed MariaDB must not take the whole
 // viewer offline — the /api/db/* routes report the failure as 503 and the rest
 // of the app (file/tree/terminal endpoints) keeps working.
-dbStore.init()
-  .then(() => console.log(`Store A ready → MariaDB ${dbStore.status().store.host}:${dbStore.status().store.port}/${dbStore.status().store.database}`))
-  .catch(err => console.warn(`Store A unavailable (db features disabled): ${err.message}`));
+//
+// init() runs once at boot; on a boot-order race (Node up before MariaDB accepts
+// connections) it would otherwise fail and pin /api/db/* to 503 until a manual
+// restart. Retry with capped exponential backoff so Store A self-heals the moment
+// MariaDB becomes reachable. init() is idempotent (CREATE ... IF NOT EXISTS), so
+// re-running it is safe.
+(function initStoreAWithRetry(attempt = 1) {
+  dbStore.init()
+    .then(() => console.log(`Store A ready → MariaDB ${dbStore.status().store.host}:${dbStore.status().store.port}/${dbStore.status().store.database}`))
+    .catch(err => {
+      const delay = Math.min(30000, 1000 * 2 ** (attempt - 1)); // 1s, 2s, 4s… capped at 30s
+      console.warn(`Store A unavailable (attempt ${attempt}), retrying in ${delay}ms: ${err.message}`);
+      setTimeout(() => initStoreAWithRetry(attempt + 1), delay).unref();
+    });
+})();
