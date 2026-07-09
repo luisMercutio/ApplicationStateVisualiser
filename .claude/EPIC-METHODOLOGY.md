@@ -100,3 +100,31 @@ holds only the connection registry and the methodology files. The file-based
 `business-rules.json` remains the spec artifact the pipeline generates; the database
 is the running application's live copy that the visualiser reads/edits per active
 connection. Keep both in mind but do not conflate them.
+
+## Technical Specifications
+
+A **technical specification** is a **per-BR parent** describing how one specific Business
+Rule is implemented. There is **exactly one spec per BR**. The spec is the parent of:
+
+- **entries** — implementation instructions, each with a `source` of `user` or `agent`,
+  that tell the developer agent how to implement *that* BR; and
+- **artifacts** — the generated file changes for that BR (class diagram, endpoints,
+  components, migrations, tests, mockups, …), each with a `changeType` of
+  `add | modify | remove`. The spec is the parent these artifacts hang off.
+
+Technical specs live in the **application's own database** (tables
+`technical_specifications`, `technical_specification_entries`,
+`technical_specification_artifacts`), scoped to the active connection — not in the master
+store and not in `business-rules.json`. The developer agents load each BR's spec at their
+**Step 0.6** and treat its entries as authoritative implementation instructions, then
+register each file they generate back as an artifact under that BR's spec.
+
+**Distinct from Additional Agent Information.** Do not conflate the two:
+
+| | Additional Agent Information (Step 0.5) | Technical Specification (Step 0.6) |
+|---|---|---|
+| Scope | cross-cutting, cumulative up the chain | scoped to **one** BR |
+| When active | once development *reaches* the referenced BR (`referenced seq <= seq being developed`) | for the specific BR being implemented |
+| Example | "always use i18n" | "how to implement BR-042 specifically" |
+| Loaded via | `GET /api/db/active/agent-info?uptoSeq=<N>` | `GET /api/db/active/technical-specs?brName=<name>` |
+| Owns generated files | no | yes — artifacts hang off the spec |

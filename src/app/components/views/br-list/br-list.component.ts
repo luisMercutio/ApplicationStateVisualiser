@@ -13,10 +13,12 @@ import { categoryColor } from '../../../models/business-rule.model';
 import { DbConnection } from '../../../models/db-connection.model';
 import { AppDataActions } from '../../../store/app-data/app-data.actions';
 import { selectEpicsWithRules, selectAppDataLoading, selectAppDataError, selectAgentInfoCountByRule } from '../../../store/app-data/app-data.selectors';
+import { selectSpecEntryCountByRule } from '../../../store/technical-specs/technical-specs.selectors';
 import { selectActiveConnection } from '../../../store/connections/connections.selectors';
 import { BrFormDialogComponent, BrFormData } from '../../br-form-dialog/br-form-dialog.component';
 import { EpicFormDialogComponent } from '../../epic-form-dialog/epic-form-dialog.component';
 import { AgentInfoDialogComponent, AgentInfoDialogData } from '../../agent-info-dialog/agent-info-dialog.component';
+import { TechnicalSpecDialogComponent, TechnicalSpecDialogData } from '../../technical-spec-dialog/technical-spec-dialog.component';
 
 interface RuleList {
   epicId: string | null;      // null = the ungrouped bucket
@@ -100,6 +102,12 @@ const UNGROUPED = 'ungrouped';
                       <mat-icon>psychology</mat-icon>
                       @if (infoCounts()[r.id]) { <span class="info-badge">{{ infoCounts()[r.id] }}</span> }
                     </button>
+                    <button mat-icon-button class="xs spec-btn" [class.has-spec]="specCounts()[r.id]"
+                            [matTooltip]="(specCounts()[r.id] || 0) + ' technical spec entr' + ((specCounts()[r.id] === 1) ? 'y' : 'ies')"
+                            (click)="openTechnicalSpec(r)">
+                      <mat-icon>description</mat-icon>
+                      @if (specCounts()[r.id]) { <span class="spec-badge">{{ specCounts()[r.id] }}</span> }
+                    </button>
                     <button mat-icon-button class="xs" matTooltip="Edit" (click)="editRule(r)"><mat-icon>edit</mat-icon></button>
                     <button mat-icon-button class="xs" matTooltip="Delete" (click)="deleteRule(r)"><mat-icon>delete</mat-icon></button>
                   </div>
@@ -122,6 +130,9 @@ const UNGROUPED = 'ungrouped';
     .xs mat-icon { font-size: 16px; width: 16px; height: 16px; }
     .info-btn { position: relative; color: #bbb; } .info-btn.has-info { color: #7b1fa2; }
     .info-badge { position: absolute; top: 0; right: 0; background: #7b1fa2; color: white; font-size: 9px;
+                  line-height: 1; padding: 1px 3px; border-radius: 8px; min-width: 8px; text-align: center; }
+    .spec-btn { position: relative; color: #bbb; } .spec-btn.has-spec { color: #00796b; }
+    .spec-badge { position: absolute; top: 0; right: 0; background: #00796b; color: white; font-size: 9px;
                   line-height: 1; padding: 1px 3px; border-radius: 8px; min-width: 8px; text-align: center; }
     .msg { padding: 24px; color: #999; text-align: center; } .msg.err { color: #c62828; }
     .msg .inline { font-size: 15px; vertical-align: middle; }
@@ -165,6 +176,7 @@ export class BrListComponent implements OnInit, OnDestroy {
   error = signal<string | null>(null);
   lists = signal<RuleList[]>([]);
   infoCounts = signal<Record<string, number>>({});
+  specCounts = signal<Record<string, number>>({});
 
   private epics: Epic[] = [];
 
@@ -176,6 +188,7 @@ export class BrListComponent implements OnInit, OnDestroy {
       this.store.select(selectAppDataLoading).subscribe((v) => this.loading.set(v)),
       this.store.select(selectAppDataError).subscribe((v) => this.error.set(v)),
       this.store.select(selectAgentInfoCountByRule).subscribe((c) => this.infoCounts.set(c)),
+      this.store.select(selectSpecEntryCountByRule).subscribe((c) => this.specCounts.set(c)),
       this.store.select(selectEpicsWithRules).subscribe(({ grouped, ungrouped }) => {
         this.epics = grouped.map((g) => g.epic);
         const lists: RuleList[] = grouped
@@ -254,6 +267,13 @@ export class BrListComponent implements OnInit, OnDestroy {
     if (!id) return;
     const data: AgentInfoDialogData = { rule, connectionId: id };
     this.dialog.open(AgentInfoDialogComponent, { data });
+  }
+
+  openTechnicalSpec(rule: AppBusinessRule): void {
+    const id = this.connId();
+    if (!id) return;
+    const data: TechnicalSpecDialogData = { rule, connectionId: id };
+    this.dialog.open(TechnicalSpecDialogComponent, { data });
   }
 
   // ── Drag reorder / move across epics ──

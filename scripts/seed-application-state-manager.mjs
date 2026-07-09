@@ -30,6 +30,8 @@ const EPICS = [
     description: 'Serve and edit the .claude architecture artifacts with path-traversal protection.' },
   { key: 'EPIC-009', seq: '9', title: 'Additional Agent Information',
     description: 'Attach extra agent-facing context to Business Rules and load it into the developer agents as development reaches each rule.' },
+  { key: 'EPIC-010', seq: '10', title: 'Technical Specifications',
+    description: 'A per-Business-Rule technical specification that is the parent of the generated file changes for that rule, carrying user- and agent-authored implementation entries and loaded into the developer agents.' },
 ];
 
 const RULES = [
@@ -128,6 +130,22 @@ const RULES = [
     rule: 'Additional Agent Information is authored per Business Rule from the BR List, scoped to the active connection.' },
   { name: 'BR-039', epic: 'EPIC-009', seq: '9.3', category: 'workflow', features: ['agent-info', 'methodology'], dependsOn: ['BR-037'],
     rule: 'At the start of a development task the developer agents load the Additional Agent Information whose referenced BR seq is <= the seq being developed, and treat each description as authoritative context.' },
+
+  // EPIC-010 — Technical Specifications
+  { name: 'BR-040', epic: 'EPIC-010', seq: '10.1', category: 'data', features: ['technical-specs'], dependsOn: ['BR-016'],
+    rule: 'A Business Rule can carry a technical specification: a row in the application’s own technical_specifications table, with exactly one spec per BR, cascade-deleted with the BR.' },
+  { name: 'BR-041', epic: 'EPIC-010', seq: '10.2', category: 'data', features: ['technical-specs'], dependsOn: ['BR-040'],
+    rule: 'A technical specification owns implementation entries (technical_specification_entries): each carries a description and a source of ‘user’ or ‘agent’ telling the developer agent how to implement that BR.' },
+  { name: 'BR-042', epic: 'EPIC-010', seq: '10.3', category: 'data', features: ['technical-specs'], dependsOn: ['BR-040'],
+    rule: 'A technical specification is the parent of its artifacts (technical_specification_artifacts): the generated file changes — class diagram, endpoints, components, migrations, tests — each with a change type of add, modify, or remove.' },
+  { name: 'BR-043', epic: 'EPIC-010', seq: '10.4', category: 'workflow', features: ['technical-specs'], dependsOn: ['BR-020', 'BR-040'],
+    rule: 'All technical-specification, entry, and artifact reads and writes are scoped to the active connection.' },
+  { name: 'BR-044', epic: 'EPIC-010', seq: '10.5', category: 'ui', features: ['technical-specs', 'br-list'], dependsOn: ['BR-040', 'BR-038'],
+    rule: 'A dedicated Tech Specs page plus a per-BR technical-spec dialog let the user view and edit a Business Rule’s specification, its entries, and its artifacts in the app.' },
+  { name: 'BR-045', epic: 'EPIC-010', seq: '10.6', category: 'workflow', features: ['technical-specs', 'methodology'], dependsOn: ['BR-040', 'BR-041'],
+    rule: 'At their Step 0.6 the developer agents load each BR’s technical specification, scoped to that BR, and treat its entries as authoritative implementation instructions — distinct from BR-039’s cumulative, cross-cutting Additional Agent Information.' },
+  { name: 'BR-046', epic: 'EPIC-010', seq: '10.7', category: 'integration', features: ['technical-specs', 'methodology'], dependsOn: ['BR-042', 'BR-045'],
+    rule: 'After implementing a BR the developer agents register each generated file back as an artifact under that BR’s technical specification.' },
 ];
 
 async function json(method, url, body) {

@@ -274,6 +274,100 @@ app.get('/api/db/active/agent-info', async (req, res) => {
   } catch (err) { sendDbError(res, err); }
 });
 
+// ── Technical specifications (per-BR implementation spec, in the target's DB) ──
+// A technical specification is the parent entity for how one Business Rule is
+// implemented: it owns `entries` (implementation instructions authored by a user
+// or an agent) and `artifacts` (the generated file changes that realise the
+// rule). Every read embeds both children. Routes are scoped to a connection id.
+app.get('/api/db/connections/:id/technical-specs', async (req, res) => {
+  try { res.json({ specs: await dbStore.listTechnicalSpecs(req.params.id) }); } catch (err) { sendDbError(res, err); }
+});
+
+app.post('/api/db/connections/:id/technical-specs', async (req, res) => {
+  try { res.status(201).json(await dbStore.createTechnicalSpec(req.params.id, req.body || {})); } catch (err) { sendDbError(res, err); }
+});
+
+app.put('/api/db/connections/:id/technical-specs/:specId', async (req, res) => {
+  try {
+    const updated = await dbStore.updateTechnicalSpec(req.params.id, req.params.specId, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'technical specification not found' });
+    res.json(updated);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/db/connections/:id/technical-specs/:specId', async (req, res) => {
+  try {
+    const ok = await dbStore.deleteTechnicalSpec(req.params.id, req.params.specId);
+    if (!ok) return res.status(404).json({ error: 'technical specification not found' });
+    res.json({ ok: true });
+  } catch (err) { sendDbError(res, err); }
+});
+
+// Spec entries (implementation instructions)
+app.post('/api/db/connections/:id/technical-specs/:specId/entries', async (req, res) => {
+  try {
+    const created = await dbStore.createSpecEntry(req.params.id, req.params.specId, req.body || {});
+    if (!created) return res.status(404).json({ error: 'technical specification not found' });
+    res.status(201).json(created);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.put('/api/db/connections/:id/technical-specs/:specId/entries/:entryId', async (req, res) => {
+  try {
+    const updated = await dbStore.updateSpecEntry(req.params.id, req.params.specId, req.params.entryId, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'spec entry not found' });
+    res.json(updated);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/db/connections/:id/technical-specs/:specId/entries/:entryId', async (req, res) => {
+  try {
+    const ok = await dbStore.deleteSpecEntry(req.params.id, req.params.specId, req.params.entryId);
+    if (!ok) return res.status(404).json({ error: 'spec entry not found' });
+    res.json({ ok: true });
+  } catch (err) { sendDbError(res, err); }
+});
+
+// Spec artifacts (the generated file changes)
+app.post('/api/db/connections/:id/technical-specs/:specId/artifacts', async (req, res) => {
+  try {
+    const created = await dbStore.createSpecArtifact(req.params.id, req.params.specId, req.body || {});
+    if (!created) return res.status(404).json({ error: 'technical specification not found' });
+    res.status(201).json(created);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.put('/api/db/connections/:id/technical-specs/:specId/artifacts/:artifactId', async (req, res) => {
+  try {
+    const updated = await dbStore.updateSpecArtifact(req.params.id, req.params.specId, req.params.artifactId, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'spec artifact not found' });
+    res.json(updated);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/db/connections/:id/technical-specs/:specId/artifacts/:artifactId', async (req, res) => {
+  try {
+    const ok = await dbStore.deleteSpecArtifact(req.params.id, req.params.specId, req.params.artifactId);
+    if (!ok) return res.status(404).json({ error: 'spec artifact not found' });
+    res.json({ ok: true });
+  } catch (err) { sendDbError(res, err); }
+});
+
+// Convenience read for the develop agents: technical specs for the ACTIVE
+// connection. Unlike agent-info (cumulative up to a seq), a spec is per-BR, so
+// this filters to a single BR by `?brName=` or `?brSeq=` when provided.
+app.get('/api/db/active/technical-specs', async (req, res) => {
+  try {
+    const activeId = await dbStore.getActiveId();
+    if (!activeId) return res.json({ specs: [], activeId: null });
+    let specs = await dbStore.listTechnicalSpecs(activeId);
+    const { brName, brSeq } = req.query;
+    if (brName != null) specs = specs.filter((s) => s.brName === String(brName));
+    if (brSeq != null) specs = specs.filter((s) => String(s.brSeq) === String(brSeq));
+    res.json({ specs, activeId });
+  } catch (err) { sendDbError(res, err); }
+});
+
 // ── Methodology files in the master DB (agents + commands) ────────────────────
 // The master DB is the source of truth; saves also write through to .claude/ on
 // disk so Claude Code keeps seeing the live copy. Editable from within the app.

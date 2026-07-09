@@ -11,6 +11,7 @@ import { ToolbarComponent } from './components/toolbar/toolbar.component';
 import { PanelGridComponent } from './components/panel-grid/panel-grid.component';
 import { AddPanelDialogComponent } from './components/add-panel-dialog/add-panel-dialog.component';
 import { BrListComponent } from './components/views/br-list/br-list.component';
+import { TechnicalSpecsComponent } from './components/views/technical-specs/technical-specs.component';
 import { TerminalComponent } from './components/views/terminal/terminal.component';
 import { MethodologyEditorComponent } from './components/views/methodology-editor/methodology-editor.component';
 import { Panel, ViewType } from './models/panel.model';
@@ -25,7 +26,7 @@ function newId(): string {
   standalone: true,
   imports: [
     MatDialogModule, ToolbarComponent, PanelGridComponent,
-    BrListComponent, TerminalComponent, MethodologyEditorComponent,
+    BrListComponent, TechnicalSpecsComponent, TerminalComponent, MethodologyEditorComponent,
   ],
   template: `
     <div class="app-shell">
@@ -33,6 +34,7 @@ function newId(): string {
       <div class="workspace">
         @switch (page()) {
           @case ('br-list') { <app-br-list></app-br-list> }
+          @case ('technical-specs') { <app-technical-specs></app-technical-specs> }
           @case ('features') { <app-panel-grid></app-panel-grid> }
           @case ('terminal') { <app-terminal></app-terminal> }
           @case ('settings') { <app-methodology-editor></app-methodology-editor> }
