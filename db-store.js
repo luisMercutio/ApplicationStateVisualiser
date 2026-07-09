@@ -450,6 +450,19 @@ async function ensureAppSchema(pool) {
       KEY idx_agentinfo_br (business_rule_id),
       CONSTRAINT fk_agentinfo_br FOREIGN KEY (business_rule_id) REFERENCES business_rules(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  // Free-form notes / ideas kept against the application. `related_brs` is an
+  // OPTIONAL JSON array of BR references (free-form strings, not FKs), so a note
+  // stays valid regardless of which BRs exist. Independent of epics/business_rules.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS notes (
+      id          VARCHAR(36)  NOT NULL PRIMARY KEY,
+      title       VARCHAR(255) NOT NULL,
+      description LONGTEXT,
+      related_brs LONGTEXT,
+      created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 }
 
 // Ensure the target database itself exists before we open a data pool to it.
@@ -561,6 +574,71 @@ async function deleteEpic(id, epicId) {
   const pool = await appPool(id);
   // FK is ON DELETE SET NULL, so member BRs survive un-grouped.
   const [res] = await pool.query('DELETE FROM epics WHERE id = ?', [epicId]);
+  return res.affectedRows > 0;
+}
+
+// ── Notes ─────────────────────────────────────────────────────────────────────
+function noteRowToDto(r) {
+  return {
+    id: r.id,
+    title: r.title,
+    description: r.description ?? null,
+    relatedBrs: fromJsonText(r.related_brs, []),
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+function normaliseNote(input) {
+  const title = String(input?.title ?? '').trim();
+  if (!title) throw badRequest('title is required');
+  const related = Array.isArray(input?.relatedBrs)
+    ? input.relatedBrs.map((s) => String(s).trim()).filter(Boolean)
+    : [];
+  return {
+    title,
+    description: input?.description == null ? null : String(input.description),
+    relatedBrs: [...new Set(related)],
+  };
+}
+
+async function listNotes(id) {
+  ensureReady();
+  const pool = await appPool(id);
+  const [rows] = await pool.query('SELECT * FROM notes ORDER BY updated_at DESC, title');
+  return rows.map(noteRowToDto);
+}
+
+async function createNote(id, input) {
+  ensureReady();
+  const pool = await appPool(id);
+  const n = normaliseNote(input);
+  const noteId = crypto.randomUUID();
+  await pool.query(
+    'INSERT INTO notes (id, title, description, related_brs) VALUES (?, ?, ?, ?)',
+    [noteId, n.title, n.description, toJsonText(n.relatedBrs)],
+  );
+  const [rows] = await pool.query('SELECT * FROM notes WHERE id = ?', [noteId]);
+  return noteRowToDto(rows[0]);
+}
+
+async function updateNote(id, noteId, input) {
+  ensureReady();
+  const pool = await appPool(id);
+  const n = normaliseNote(input);
+  const [res] = await pool.query(
+    'UPDATE notes SET title = ?, description = ?, related_brs = ? WHERE id = ?',
+    [n.title, n.description, toJsonText(n.relatedBrs), noteId],
+  );
+  if (res.affectedRows === 0) return null;
+  const [rows] = await pool.query('SELECT * FROM notes WHERE id = ?', [noteId]);
+  return noteRowToDto(rows[0]);
+}
+
+async function deleteNote(id, noteId) {
+  ensureReady();
+  const pool = await appPool(id);
+  const [res] = await pool.query('DELETE FROM notes WHERE id = ?', [noteId]);
   return res.affectedRows > 0;
 }
 
@@ -848,6 +926,7 @@ module.exports = {
   testParams, testExisting,
   listTables, previewTable,
   listEpics, createEpic, updateEpic, deleteEpic,
+  listNotes, createNote, updateNote, deleteNote,
   listBusinessRules, createBusinessRule, updateBusinessRule, deleteBusinessRule,
   listAgentInfo, createAgentInfo, updateAgentInfo, deleteAgentInfo, listAgentInfoUpToSeq,
   listMethodologyFiles, getMethodologyFile, saveMethodologyFile,

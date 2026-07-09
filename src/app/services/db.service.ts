@@ -5,6 +5,7 @@ import {
   DbConnection, DbConnectionInput, DbPreview, DbStoreStatus, DbTableInfo, DbTestResult,
 } from '../models/db-connection.model';
 import { AppBusinessRule, AppBusinessRuleInput, BrAgentInfo, BrAgentInfoInput, Epic, EpicInput } from '../models/app-data.model';
+import { Note, NoteInput } from '../models/note.model';
 import { MethodologyFile, MethodologyFileMeta, MethodologyKind } from '../models/methodology-file.model';
 
 // Mirror FileService's host derivation so the DB API works over localhost and
@@ -84,6 +85,31 @@ export class DbService {
 
   deleteEpic(id: string, epicId: string): Observable<{ ok: boolean }> {
     return this.http.delete<{ ok: boolean }>(`${API_BASE}/api/db/connections/${id}/epics/${epicId}`);
+  }
+
+  // ── Notes (in the active connection's application DB) ──
+  listNotes(id: string): Observable<{ notes: Note[] }> {
+    return this.http.get<{ notes: Note[] }>(`${API_BASE}/api/db/connections/${id}/notes`);
+  }
+
+  createNote(id: string, input: NoteInput): Observable<Note> {
+    return this.http.post<Note>(`${API_BASE}/api/db/connections/${id}/notes`, input);
+  }
+
+  updateNote(id: string, noteId: string, input: NoteInput): Observable<Note> {
+    return this.http.put<Note>(`${API_BASE}/api/db/connections/${id}/notes/${noteId}`, input);
+  }
+
+  deleteNote(id: string, noteId: string): Observable<{ ok: boolean }> {
+    return this.http.delete<{ ok: boolean }>(`${API_BASE}/api/db/connections/${id}/notes/${noteId}`);
+  }
+
+  // ── Live activity feed (ntfy mirror over WebSocket) ──
+  // Mirrors API_BASE's host derivation so it works over Tailscale (wss on https).
+  activityWsUrl(): string {
+    const proto = typeof window !== 'undefined' && window.location?.protocol === 'https:' ? 'wss' : 'ws';
+    const host = typeof window !== 'undefined' && window.location?.hostname ? window.location.hostname : 'localhost';
+    return `${proto}://${host}:${API_PORT}/api/activity`;
   }
 
   // ── Business rules (in the active connection's application DB) ──

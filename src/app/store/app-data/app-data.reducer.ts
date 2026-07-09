@@ -1,5 +1,6 @@
 import { createFeature, createReducer, on } from '@ngrx/store';
 import { AppBusinessRule, BrAgentInfo, Epic } from '../../models/app-data.model';
+import { Note } from '../../models/note.model';
 import { AppDataActions } from './app-data.actions';
 
 export interface AppDataState {
@@ -7,6 +8,7 @@ export interface AppDataState {
   epics: Epic[];
   rules: AppBusinessRule[];
   agentInfo: BrAgentInfo[];
+  notes: Note[];
   loading: boolean;
   error: string | null;
 }
@@ -16,6 +18,7 @@ const initialState: AppDataState = {
   epics: [],
   rules: [],
   agentInfo: [],
+  notes: [],
   loading: false,
   error: null,
 };
@@ -35,13 +38,18 @@ function upsertInfo(info: BrAgentInfo[], entry: BrAgentInfo): BrAgentInfo[] {
   return idx >= 0 ? info.map(i => (i.id === entry.id ? entry : i)) : [...info, entry];
 }
 
+function upsertNote(notes: Note[], note: Note): Note[] {
+  const idx = notes.findIndex(n => n.id === note.id);
+  return idx >= 0 ? notes.map(n => (n.id === note.id ? note : n)) : [...notes, note];
+}
+
 export const appDataFeature = createFeature({
   name: 'appData',
   reducer: createReducer(
     initialState,
     on(AppDataActions.load, (state, { connectionId }) => ({ ...state, loading: true, error: null, connectionId })),
-    on(AppDataActions.loadSuccess, (state, { connectionId, epics, rules, agentInfo }) => ({
-      ...state, connectionId, epics, rules, agentInfo, loading: false, error: null,
+    on(AppDataActions.loadSuccess, (state, { connectionId, epics, rules, agentInfo, notes }) => ({
+      ...state, connectionId, epics, rules, agentInfo, notes, loading: false, error: null,
     })),
     on(AppDataActions.loadFailure, (state, { error }) => ({ ...state, loading: false, error })),
     on(AppDataActions.clear, () => ({ ...initialState })),
@@ -64,6 +72,13 @@ export const appDataFeature = createFeature({
       rules: state.rules.filter(r => r.id !== ruleId),
       // The DB cascades agent-info on BR delete; mirror that locally.
       agentInfo: state.agentInfo.filter(i => i.businessRuleId !== ruleId),
+    })),
+
+    on(AppDataActions.createNoteSuccess, AppDataActions.updateNoteSuccess, (state, { note }) => ({
+      ...state, notes: upsertNote(state.notes, note), error: null,
+    })),
+    on(AppDataActions.deleteNoteSuccess, (state, { noteId }) => ({
+      ...state, notes: state.notes.filter(n => n.id !== noteId),
     })),
 
     on(AppDataActions.createAgentInfoSuccess, AppDataActions.updateAgentInfoSuccess, (state, { info }) => ({

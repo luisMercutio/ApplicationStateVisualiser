@@ -6,6 +6,7 @@ export const {
   selectEpics,
   selectRules: selectAppRules,
   selectAgentInfo,
+  selectNotes,
   selectLoading: selectAppDataLoading,
   selectError: selectAppDataError,
   selectConnectionId: selectAppDataConnectionId,

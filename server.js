@@ -20,6 +20,18 @@ const DEFAULT_TMUX_SESSION = process.env.TMUX_SESSION || 'applicationStateVisual
 // array (no shell), so this mainly guards against surprising names, not injection.
 const SESSION_RE = /^[A-Za-z0-9_.-]+$/;
 
+// ── ntfy activity feed config ─────────────────────────────────────────────────
+// The Claude Code Stop hook POSTs a "chat finished" notification to a self-hosted
+// ntfy topic (both the WSL 🐧 and native-Windows 🪟 notifiers fan into the same
+// topic). We subscribe to that topic's JSON stream and mirror it to the browser
+// over the /api/activity WebSocket — no second hook, no database.
+const NTFY_BASE = process.env.NTFY_URL || 'http://100.107.151.8:2586';
+const NTFY_TOPIC = process.env.NTFY_TOPIC || 'Luiscomputer_claude';
+// How much recent history to replay on first connect (and how many messages to
+// keep in memory for clients that connect later). Bounded by ntfy's cache.
+const ACTIVITY_BACKFILL = process.env.NTFY_BACKFILL || '12h';
+const ACTIVITY_BUFFER_MAX = 200;
+
 function clampInt(value, fallback, min, max) {
   const n = parseInt(value, 10);
   if (!Number.isFinite(n)) return fallback;
@@ -203,6 +215,32 @@ app.delete('/api/db/connections/:id/epics/:epicId', async (req, res) => {
   } catch (err) { sendDbError(res, err); }
 });
 
+// Notes — free-form ideas kept against the active application, same connection
+// scoping as epics/business-rules.
+app.get('/api/db/connections/:id/notes', async (req, res) => {
+  try { res.json({ notes: await dbStore.listNotes(req.params.id) }); } catch (err) { sendDbError(res, err); }
+});
+
+app.post('/api/db/connections/:id/notes', async (req, res) => {
+  try { res.status(201).json(await dbStore.createNote(req.params.id, req.body || {})); } catch (err) { sendDbError(res, err); }
+});
+
+app.put('/api/db/connections/:id/notes/:noteId', async (req, res) => {
+  try {
+    const updated = await dbStore.updateNote(req.params.id, req.params.noteId, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'note not found' });
+    res.json(updated);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/db/connections/:id/notes/:noteId', async (req, res) => {
+  try {
+    const ok = await dbStore.deleteNote(req.params.id, req.params.noteId);
+    if (!ok) return res.status(404).json({ error: 'note not found' });
+    res.json({ ok: true });
+  } catch (err) { sendDbError(res, err); }
+});
+
 app.get('/api/db/connections/:id/business-rules', async (req, res) => {
   try { res.json({ rules: await dbStore.listBusinessRules(req.params.id) }); } catch (err) { sendDbError(res, err); }
 });
@@ -293,14 +331,117 @@ app.put('/api/methodology/:kind/:name', async (req, res) => {
   try { res.json(await dbStore.saveMethodologyFile(req.params.kind, req.params.name, (req.body || {}).content)); } catch (err) { sendDbError(res, err); }
 });
 
-// Serve the SPA + API over one HTTP server so the WebSocket can share the port.
+// ── ntfy activity feed ────────────────────────────────────────────────────────
+// One persistent upstream connection to ntfy's JSON stream, mirrored to every
+// connected browser. Kept in an in-memory ring buffer so a client that opens the
+// panel later still sees recent history. Purely in-memory — nothing is persisted.
+const activityBuffer = [];        // recent { id, time, title, message, tags, priority }
+const activityClients = new Set(); // open /api/activity WebSockets
+let ntfyLastId = null;            // resume point so reconnects don't gap or duplicate
+let ntfyReconnectTimer = null;
+
+function broadcastActivity(msg) {
+  // Dedupe by id — a reconnect with `since=<id>` can re-deliver the boundary msg.
+  if (msg.id && activityBuffer.some((m) => m.id === msg.id)) return;
+  activityBuffer.push(msg);
+  if (activityBuffer.length > ACTIVITY_BUFFER_MAX) activityBuffer.shift();
+  if (msg.id) ntfyLastId = msg.id;
+  const frame = JSON.stringify({ type: 'message', event: msg });
+  for (const ws of activityClients) {
+    if (ws.readyState === ws.OPEN) ws.send(frame);
+  }
+}
+
+function scheduleNtfyReconnect() {
+  if (ntfyReconnectTimer) return; // already pending — don't stack reconnects
+  ntfyReconnectTimer = setTimeout(() => {
+    ntfyReconnectTimer = null;
+    subscribeNtfy();
+  }, 5000);
+}
+
+function subscribeNtfy() {
+  // Resume from the last seen id after the first successful run so reconnects
+  // don't replay the whole backfill window; use the time window on a cold start.
+  const since = ntfyLastId ? encodeURIComponent(ntfyLastId) : ACTIVITY_BACKFILL;
+  const url = `${NTFY_BASE}/${NTFY_TOPIC}/json?since=${since}`;
+  const lib = url.startsWith('https:') ? require('https') : http;
+
+  let buf = '';
+  const req = lib.get(url, (res) => {
+    if (res.statusCode !== 200) {
+      res.resume();
+      scheduleNtfyReconnect();
+      return;
+    }
+    res.setEncoding('utf8');
+    res.on('data', (chunk) => {
+      // ntfy streams newline-delimited JSON: one object per line.
+      buf += chunk;
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        let obj;
+        try { obj = JSON.parse(line); } catch { continue; }
+        // Stream also carries open/keepalive/poll_request events — ignore those.
+        if (obj.event !== 'message') continue;
+        broadcastActivity({
+          id: obj.id,
+          time: obj.time || 0,
+          title: obj.title || '',
+          message: obj.message || '',
+          tags: Array.isArray(obj.tags) ? obj.tags : [],
+          priority: obj.priority || 3,
+        });
+      }
+    });
+    res.on('end', scheduleNtfyReconnect);
+    res.on('error', scheduleNtfyReconnect);
+  });
+  req.on('error', scheduleNtfyReconnect);
+  // Long-lived stream: don't let an idle-socket timeout kill it (ntfy sends
+  // keepalive events, but be explicit).
+  req.setTimeout(0);
+}
+
+// Serve the SPA + API over one HTTP server so the WebSockets can share the port.
 const server = http.createServer(app);
+
+// Two WebSocket endpoints share the one HTTP server. Run both in noServer mode
+// and route upgrades by path ourselves — if each attached to the server with its
+// own `path`, whichever fired first would abort the other endpoint's handshake.
+const wss = new WebSocketServer({ noServer: true });
+const activityWss = new WebSocketServer({ noServer: true });
+
+server.on('upgrade', (req, socket, head) => {
+  let pathname;
+  try { pathname = new URL(req.url, 'http://localhost').pathname; } catch { pathname = req.url; }
+  if (pathname === '/api/terminal') {
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+  } else if (pathname === '/api/activity') {
+    activityWss.handleUpgrade(req, socket, head, (ws) => activityWss.emit('connection', ws, req));
+  } else {
+    socket.destroy();
+  }
+});
+
+// Activity feed: on connect, replay the in-memory backlog, then stream live
+// messages as they arrive from ntfy. Read-only — clients send nothing.
+activityWss.on('connection', (ws) => {
+  activityClients.add(ws);
+  if (ws.readyState === ws.OPEN) {
+    ws.send(JSON.stringify({ type: 'backlog', events: activityBuffer }));
+  }
+  const drop = () => activityClients.delete(ws);
+  ws.on('close', drop);
+  ws.on('error', drop);
+});
 
 // WebSocket ⇄ PTY bridge. Protocol:
 //   server → client : terminal output as BINARY frames; control as TEXT JSON.
 //   client → server : keystrokes as BINARY frames; {type:'resize',cols,rows} as TEXT JSON.
-const wss = new WebSocketServer({ server, path: '/api/terminal' });
-
 wss.on('connection', (ws, req) => {
   const url = new URL(req.url, 'http://localhost');
   const session = url.searchParams.get('session') || DEFAULT_TMUX_SESSION;
@@ -369,6 +510,10 @@ wss.on('connection', (ws, req) => {
 
 server.listen(PORT, () =>
   console.log(`UC Arch Viewer server on http://localhost:${PORT} (tmux bridge → WSL:${WSL_DISTRO})`));
+
+// Start mirroring the ntfy activity topic. Failures self-reschedule, so a downed
+// ntfy just means an empty feed — it never affects the rest of the server.
+subscribeNtfy();
 
 // Provision Store A in the background. A downed MariaDB must not take the whole
 // viewer offline — the /api/db/* routes report the failure as 503 and the rest

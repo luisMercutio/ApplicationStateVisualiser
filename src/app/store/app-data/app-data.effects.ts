@@ -33,8 +33,9 @@ export class AppDataEffects {
           epics: this.db.listEpics(connectionId).pipe(map(r => r.epics)),
           rules: this.db.listBusinessRules(connectionId).pipe(map(r => r.rules)),
           agentInfo: this.db.listAgentInfo(connectionId).pipe(map(r => r.info)),
+          notes: this.db.listNotes(connectionId).pipe(map(r => r.notes)),
         }).pipe(
-          map(({ epics, rules, agentInfo }) => AppDataActions.loadSuccess({ connectionId, epics, rules, agentInfo })),
+          map(({ epics, rules, agentInfo, notes }) => AppDataActions.loadSuccess({ connectionId, epics, rules, agentInfo, notes })),
           catchError((err) => of(AppDataActions.loadFailure({ error: errMsg(err) }))),
         ),
       ),
@@ -107,6 +108,42 @@ export class AppDataEffects {
       mergeMap(({ connectionId, ruleId }) =>
         this.db.deleteBusinessRule(connectionId, ruleId).pipe(
           map(() => AppDataActions.deleteRuleSuccess({ ruleId })),
+          catchError((err) => of(AppDataActions.mutationFailure({ error: errMsg(err) }))),
+        ),
+      ),
+    ),
+  );
+
+  createNote$ = createEffect(() =>
+    this.actions$.pipe(
+      ofType(AppDataActions.createNote),
+      mergeMap(({ connectionId, input }) =>
+        this.db.createNote(connectionId, input).pipe(
+          map((note) => AppDataActions.createNoteSuccess({ note })),
+          catchError((err) => of(AppDataActions.mutationFailure({ error: errMsg(err) }))),
+        ),
+      ),
+    ),
+  );
+
+  updateNote$ = createEffect(() =>
+    this.actions$.pipe(
+      ofType(AppDataActions.updateNote),
+      mergeMap(({ connectionId, noteId, input }) =>
+        this.db.updateNote(connectionId, noteId, input).pipe(
+          map((note) => AppDataActions.updateNoteSuccess({ note })),
+          catchError((err) => of(AppDataActions.mutationFailure({ error: errMsg(err) }))),
+        ),
+      ),
+    ),
+  );
+
+  deleteNote$ = createEffect(() =>
+    this.actions$.pipe(
+      ofType(AppDataActions.deleteNote),
+      mergeMap(({ connectionId, noteId }) =>
+        this.db.deleteNote(connectionId, noteId).pipe(
+          map(() => AppDataActions.deleteNoteSuccess({ noteId })),
           catchError((err) => of(AppDataActions.mutationFailure({ error: errMsg(err) }))),
         ),
       ),
