@@ -12,10 +12,11 @@ import { AppBusinessRule, AppBusinessRuleInput, Epic } from '../../../models/app
 import { categoryColor } from '../../../models/business-rule.model';
 import { DbConnection } from '../../../models/db-connection.model';
 import { AppDataActions } from '../../../store/app-data/app-data.actions';
-import { selectEpicsWithRules, selectAppDataLoading, selectAppDataError } from '../../../store/app-data/app-data.selectors';
+import { selectEpicsWithRules, selectAppDataLoading, selectAppDataError, selectAgentInfoCountByRule } from '../../../store/app-data/app-data.selectors';
 import { selectActiveConnection } from '../../../store/connections/connections.selectors';
 import { BrFormDialogComponent, BrFormData } from '../../br-form-dialog/br-form-dialog.component';
 import { EpicFormDialogComponent } from '../../epic-form-dialog/epic-form-dialog.component';
+import { AgentInfoDialogComponent, AgentInfoDialogData } from '../../agent-info-dialog/agent-info-dialog.component';
 
 interface RuleList {
   epicId: string | null;      // null = the ungrouped bucket
@@ -93,6 +94,12 @@ const UNGROUPED = 'ungrouped';
                         @if (r.features.length) { <span class="r-feat">{{ r.features[0] }}</span> }
                       </div>
                     </div>
+                    <button mat-icon-button class="xs info-btn" [class.has-info]="infoCounts()[r.id]"
+                            [matTooltip]="(infoCounts()[r.id] || 0) + ' agent info entr' + ((infoCounts()[r.id] === 1) ? 'y' : 'ies')"
+                            (click)="openAgentInfo(r)">
+                      <mat-icon>psychology</mat-icon>
+                      @if (infoCounts()[r.id]) { <span class="info-badge">{{ infoCounts()[r.id] }}</span> }
+                    </button>
                     <button mat-icon-button class="xs" matTooltip="Edit" (click)="editRule(r)"><mat-icon>edit</mat-icon></button>
                     <button mat-icon-button class="xs" matTooltip="Delete" (click)="deleteRule(r)"><mat-icon>delete</mat-icon></button>
                   </div>
@@ -113,6 +120,9 @@ const UNGROUPED = 'ungrouped';
     .brl-toolbar .count { color: #999; font-size: 12px; }
     .spacer { flex: 1; } .sm { font-size: 12px; } .xs { width: 26px; height: 26px; line-height: 26px; }
     .xs mat-icon { font-size: 16px; width: 16px; height: 16px; }
+    .info-btn { position: relative; color: #bbb; } .info-btn.has-info { color: #7b1fa2; }
+    .info-badge { position: absolute; top: 0; right: 0; background: #7b1fa2; color: white; font-size: 9px;
+                  line-height: 1; padding: 1px 3px; border-radius: 8px; min-width: 8px; text-align: center; }
     .msg { padding: 24px; color: #999; text-align: center; } .msg.err { color: #c62828; }
     .msg .inline { font-size: 15px; vertical-align: middle; }
     .brl-scroll { flex: 1; overflow-y: auto; padding: 8px; }
@@ -154,6 +164,7 @@ export class BrListComponent implements OnInit, OnDestroy {
   loading = signal(false);
   error = signal<string | null>(null);
   lists = signal<RuleList[]>([]);
+  infoCounts = signal<Record<string, number>>({});
 
   private epics: Epic[] = [];
 
@@ -164,6 +175,7 @@ export class BrListComponent implements OnInit, OnDestroy {
       this.store.select(selectActiveConnection).subscribe((a) => this.active.set(a)),
       this.store.select(selectAppDataLoading).subscribe((v) => this.loading.set(v)),
       this.store.select(selectAppDataError).subscribe((v) => this.error.set(v)),
+      this.store.select(selectAgentInfoCountByRule).subscribe((c) => this.infoCounts.set(c)),
       this.store.select(selectEpicsWithRules).subscribe(({ grouped, ungrouped }) => {
         this.epics = grouped.map((g) => g.epic);
         const lists: RuleList[] = grouped
@@ -235,6 +247,13 @@ export class BrListComponent implements OnInit, OnDestroy {
     if (id && confirm(`Delete Business Rule "${rule.name}"?`)) {
       this.store.dispatch(AppDataActions.deleteRule({ connectionId: id, ruleId: rule.id }));
     }
+  }
+
+  openAgentInfo(rule: AppBusinessRule): void {
+    const id = this.connId();
+    if (!id) return;
+    const data: AgentInfoDialogData = { rule, connectionId: id };
+    this.dialog.open(AgentInfoDialogComponent, { data });
   }
 
   // ── Drag reorder / move across epics ──

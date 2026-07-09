@@ -435,6 +435,21 @@ async function ensureAppSchema(pool) {
       KEY idx_br_epic (epic_id),
       CONSTRAINT fk_br_epic FOREIGN KEY (epic_id) REFERENCES epics(id) ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  // Extra, agent-facing context attached to a Business Rule. Each row references
+  // one BR and carries a free-text description. During development this is loaded
+  // into the developer agents once the BR under development has reached (seq >=)
+  // the referenced BR — see listAgentInfoUpToSeq.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS br_additional_agent_information (
+      id               VARCHAR(36) NOT NULL PRIMARY KEY,
+      business_rule_id VARCHAR(36) NOT NULL,
+      description      TEXT        NOT NULL,
+      created_at       DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at       DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      KEY idx_agentinfo_br (business_rule_id),
+      CONSTRAINT fk_agentinfo_br FOREIGN KEY (business_rule_id) REFERENCES business_rules(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 }
 
 // Ensure the target database itself exists before we open a data pool to it.
@@ -654,6 +669,108 @@ async function deleteBusinessRule(id, brId) {
   return res.affectedRows > 0;
 }
 
+// ── Additional agent information (extra context attached to a Business Rule) ───
+// Numeric-aware seq compare: nulls sort last. Mirrors the Dewey ordering the BRs
+// use elsewhere so "seq >= referenced seq" means "development has reached this BR".
+function seqCompare(a, b) {
+  if (a == null && b == null) return 0;
+  if (a == null) return 1;
+  if (b == null) return -1;
+  const A = String(a).split('.').map(Number);
+  const B = String(b).split('.').map(Number);
+  for (let i = 0; i < Math.max(A.length, B.length); i++) {
+    const x = Number.isFinite(A[i]) ? A[i] : -1;
+    const y = Number.isFinite(B[i]) ? B[i] : -1;
+    if (x !== y) return x - y;
+  }
+  return 0;
+}
+
+function agentInfoRowToDto(r) {
+  return {
+    id: r.id,
+    businessRuleId: r.business_rule_id,
+    description: r.description,
+    brName: r.br_name ?? null,
+    brSeq: r.br_seq ?? null,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+// Every read joins the BR so callers get the referenced rule's name + seq.
+const AGENT_INFO_SELECT = `
+  SELECT ai.*, br.name AS br_name, br.seq AS br_seq
+    FROM br_additional_agent_information ai
+    JOIN business_rules br ON br.id = ai.business_rule_id`;
+
+async function listAgentInfo(id) {
+  ensureReady();
+  const pool = await appPool(id);
+  const [rows] = await pool.query(`${AGENT_INFO_SELECT} ORDER BY br.seq IS NULL, br.seq, ai.created_at`);
+  return rows.map(agentInfoRowToDto);
+}
+
+function normaliseAgentInfo(input) {
+  const businessRuleId = String(input?.businessRuleId ?? '').trim();
+  const description = String(input?.description ?? '').trim();
+  if (!businessRuleId) throw badRequest('businessRuleId is required');
+  if (!description) throw badRequest('description is required');
+  return { businessRuleId, description };
+}
+
+async function createAgentInfo(id, input) {
+  ensureReady();
+  const pool = await appPool(id);
+  const a = normaliseAgentInfo(input);
+  const infoId = crypto.randomUUID();
+  try {
+    await pool.query(
+      'INSERT INTO br_additional_agent_information (id, business_rule_id, description) VALUES (?, ?, ?)',
+      [infoId, a.businessRuleId, a.description],
+    );
+  } catch (err) {
+    if (err.code === 'ER_NO_REFERENCED_ROW_2' || err.code === 'ER_NO_REFERENCED_ROW') throw badRequest('businessRuleId does not match an existing Business Rule');
+    throw err;
+  }
+  const [rows] = await pool.query(`${AGENT_INFO_SELECT} WHERE ai.id = ?`, [infoId]);
+  return agentInfoRowToDto(rows[0]);
+}
+
+async function updateAgentInfo(id, infoId, input) {
+  ensureReady();
+  const pool = await appPool(id);
+  const a = normaliseAgentInfo(input);
+  let res;
+  try {
+    [res] = await pool.query(
+      'UPDATE br_additional_agent_information SET business_rule_id = ?, description = ? WHERE id = ?',
+      [a.businessRuleId, a.description, infoId],
+    );
+  } catch (err) {
+    if (err.code === 'ER_NO_REFERENCED_ROW_2' || err.code === 'ER_NO_REFERENCED_ROW') throw badRequest('businessRuleId does not match an existing Business Rule');
+    throw err;
+  }
+  if (res.affectedRows === 0) return null;
+  const [rows] = await pool.query(`${AGENT_INFO_SELECT} WHERE ai.id = ?`, [infoId]);
+  return agentInfoRowToDto(rows[0]);
+}
+
+async function deleteAgentInfo(id, infoId) {
+  ensureReady();
+  const pool = await appPool(id);
+  const [res] = await pool.query('DELETE FROM br_additional_agent_information WHERE id = ?', [infoId]);
+  return res.affectedRows > 0;
+}
+
+// The develop-time query: every agent-info entry whose referenced BR has already
+// been reached by development, i.e. referenced BR seq <= the seq under development.
+// Filtered in JS so the Dewey seq ordering matches the rest of the app.
+async function listAgentInfoUpToSeq(id, seq) {
+  const all = await listAgentInfo(id);
+  return all.filter((a) => seqCompare(a.brSeq, seq) <= 0);
+}
+
 // ── Methodology files (agents + commands) — master DB is source of truth ──────
 // Seed once from disk; thereafter the master DB is authoritative. Edits round-trip
 // to disk too so Claude Code keeps working against .claude/ without a build step.
@@ -732,5 +849,6 @@ module.exports = {
   listTables, previewTable,
   listEpics, createEpic, updateEpic, deleteEpic,
   listBusinessRules, createBusinessRule, updateBusinessRule, deleteBusinessRule,
+  listAgentInfo, createAgentInfo, updateAgentInfo, deleteAgentInfo, listAgentInfoUpToSeq,
   listMethodologyFiles, getMethodologyFile, saveMethodologyFile,
 };

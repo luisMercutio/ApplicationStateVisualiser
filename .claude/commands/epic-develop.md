@@ -55,18 +55,31 @@ Edit `.claude/architecture/epics.md`: set the Epic's Status to `In Development` 
 
 ---
 
+## Step 3.5 — Additional Agent Information
+
+The active application may hold **Additional Agent Information** (the
+`br_additional_agent_information` table, authored in the app's BR List): free-text
+guidance attached to Business Rules. An entry applies once development has reached its
+referenced BR (`referenced BR seq <= the Epic's highest BR seq`). The developer agents
+load this themselves (their Step 0.5) via
+`curl -s "http://localhost:3001/api/db/active/agent-info?uptoSeq=<N>"` and must treat
+each returned description as authoritative additional context. Ensure the active DB
+connection is set to the application being developed before running this command.
+
+---
+
 ## Step 4 — Round 1: Develop (parallel)
 
 Spawn the **backend-developer** and **frontend-developer** agents in a single parallel call.
 
 **backend-developer prompt:**
 ```
-Implement the backend for <EPIC-ID>. Read all inputs from <epic-folder>/. Use the diff files to scope your work to only what changed in this Epic. Follow your full implementation workflow (migrations → entities → DTOs → services → controllers → tests). Report: files created, migrations added, tests written, build status, test status.
+Implement the backend for <EPIC-ID>. Read all inputs from <epic-folder>/. Use the diff files to scope your work to only what changed in this Epic. First complete your Step 0.5 (load Additional Agent Information), then follow your full implementation workflow (migrations → entities → DTOs → services → controllers → tests). Report: files created, migrations added, tests written, build status, test status.
 ```
 
 **frontend-developer prompt:**
 ```
-Implement the frontend for <EPIC-ID>. Read all inputs from <epic-folder>/. Use the diff files to scope your work to only what changed in this Epic. Follow your full implementation workflow (models → actions → reducer → selectors → service → effects → guards → components → tests). Report: files created, tests written, build status, test status.
+Implement the frontend for <EPIC-ID>. Read all inputs from <epic-folder>/. Use the diff files to scope your work to only what changed in this Epic. First complete your Step 0.5 (load Additional Agent Information), then follow your full implementation workflow (models → actions → reducer → selectors → service → effects → guards → components → tests). Report: files created, tests written, build status, test status.
 ```
 
 Wait for both. If either agent reports a build failure or an unresolvable architectural ambiguity, stop and surface the error to the user. Do not proceed to testing until both sides build cleanly.

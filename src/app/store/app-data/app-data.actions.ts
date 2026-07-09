@@ -1,5 +1,5 @@
 import { createActionGroup, emptyProps, props } from '@ngrx/store';
-import { AppBusinessRule, AppBusinessRuleInput, Epic, EpicInput } from '../../models/app-data.model';
+import { AppBusinessRule, AppBusinessRuleInput, BrAgentInfo, BrAgentInfoInput, Epic, EpicInput } from '../../models/app-data.model';
 
 // Epics + Business Rules for the ACTIVE application database. Every mutating
 // action carries the connection id it targets so the effects never race against
@@ -8,7 +8,7 @@ export const AppDataActions = createActionGroup({
   source: 'AppData',
   events: {
     'Load': props<{ connectionId: string }>(),
-    'Load Success': props<{ connectionId: string; epics: Epic[]; rules: AppBusinessRule[] }>(),
+    'Load Success': props<{ connectionId: string; epics: Epic[]; rules: AppBusinessRule[]; agentInfo: BrAgentInfo[] }>(),
     'Load Failure': props<{ error: string }>(),
     'Clear': emptyProps(), // no active connection
 
@@ -25,6 +25,13 @@ export const AppDataActions = createActionGroup({
     'Update Rule Success': props<{ rule: AppBusinessRule }>(),
     'Delete Rule': props<{ connectionId: string; ruleId: string }>(),
     'Delete Rule Success': props<{ ruleId: string }>(),
+
+    'Create Agent Info': props<{ connectionId: string; input: BrAgentInfoInput }>(),
+    'Create Agent Info Success': props<{ info: BrAgentInfo }>(),
+    'Update Agent Info': props<{ connectionId: string; infoId: string; input: BrAgentInfoInput }>(),
+    'Update Agent Info Success': props<{ info: BrAgentInfo }>(),
+    'Delete Agent Info': props<{ connectionId: string; infoId: string }>(),
+    'Delete Agent Info Success': props<{ infoId: string }>(),
 
     'Mutation Failure': props<{ error: string }>(),
   },

@@ -21,6 +21,28 @@ You will be invoked with an Epic ID (e.g. `EPIC-001`). Before reading any files:
 
 ---
 
+## Step 0.5 — Load Additional Agent Information (mandatory, at start)
+
+The active application database may hold **Additional Agent Information** — free-text
+guidance attached to specific Business Rules (the `br_additional_agent_information`
+table, authored in the app's BR List). An entry becomes active for development once
+the BR being built has **reached** the referenced BR, i.e. `referenced BR seq <= the
+seq you are implementing`.
+
+Before writing any code:
+1. Determine `N` = the **highest BR seq** you are implementing in this Epic.
+2. Fetch the applicable entries for the active application:
+   `curl -s "http://localhost:3001/api/db/active/agent-info?uptoSeq=<N>"`
+   (returns `{ info: [ { description, brName, brSeq } ... ] }` for the active connection).
+3. Treat every returned `description` as **authoritative additional context** — a
+   constraint or instruction that must shape your implementation, on top of the Epic
+   artifacts. If an entry conflicts with the artifacts, surface it rather than guessing.
+
+If the endpoint is unreachable or returns an empty list, proceed normally — this
+information is additive, never a hard gate.
+
+---
+
 ## Inputs
 
 Read these files (all paths relative to `<epic-folder>`):

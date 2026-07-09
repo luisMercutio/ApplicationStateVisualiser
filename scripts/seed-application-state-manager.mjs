@@ -28,6 +28,8 @@ const EPICS = [
     description: 'An interactive tmux terminal inside WSL, bridged to the browser over a WebSocket/PTY channel.' },
   { key: 'EPIC-008', seq: '8', title: 'Architecture Artifact Access',
     description: 'Serve and edit the .claude architecture artifacts with path-traversal protection.' },
+  { key: 'EPIC-009', seq: '9', title: 'Additional Agent Information',
+    description: 'Attach extra agent-facing context to Business Rules and load it into the developer agents as development reaches each rule.' },
 ];
 
 const RULES = [
@@ -118,6 +120,14 @@ const RULES = [
   // EPIC-008 — Architecture Artifact Access
   { name: 'BR-036', epic: 'EPIC-008', seq: '8.1', category: 'validation', features: ['resources'],
     rule: 'Architecture files are served and edited under .claude/architecture with path-traversal protection.' },
+
+  // EPIC-009 — Additional Agent Information
+  { name: 'BR-037', epic: 'EPIC-009', seq: '9.1', category: 'data', features: ['agent-info'], dependsOn: ['BR-016'],
+    rule: 'A Business Rule can carry Additional Agent Information: free-text entries stored in the application’s own br_additional_agent_information table, each referencing a BR and cascade-deleted with it.' },
+  { name: 'BR-038', epic: 'EPIC-009', seq: '9.2', category: 'ui', features: ['agent-info', 'br-list'], dependsOn: ['BR-037', 'BR-020'],
+    rule: 'Additional Agent Information is authored per Business Rule from the BR List, scoped to the active connection.' },
+  { name: 'BR-039', epic: 'EPIC-009', seq: '9.3', category: 'workflow', features: ['agent-info', 'methodology'], dependsOn: ['BR-037'],
+    rule: 'At the start of a development task the developer agents load the Additional Agent Information whose referenced BR seq is <= the seq being developed, and treat each description as authoritative context.' },
 ];
 
 async function json(method, url, body) {

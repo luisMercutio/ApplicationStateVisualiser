@@ -227,6 +227,53 @@ app.delete('/api/db/connections/:id/business-rules/:brId', async (req, res) => {
   } catch (err) { sendDbError(res, err); }
 });
 
+// ── Additional agent information (extra agent-facing context per Business Rule) ─
+// `?uptoSeq=<seq>` filters to entries whose referenced BR has been reached by
+// development (referenced BR seq <= uptoSeq) — what the develop agents load.
+app.get('/api/db/connections/:id/agent-info', async (req, res) => {
+  try {
+    const { uptoSeq } = req.query;
+    const info = uptoSeq != null
+      ? await dbStore.listAgentInfoUpToSeq(req.params.id, String(uptoSeq))
+      : await dbStore.listAgentInfo(req.params.id);
+    res.json({ info });
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.post('/api/db/connections/:id/agent-info', async (req, res) => {
+  try { res.status(201).json(await dbStore.createAgentInfo(req.params.id, req.body || {})); } catch (err) { sendDbError(res, err); }
+});
+
+app.put('/api/db/connections/:id/agent-info/:infoId', async (req, res) => {
+  try {
+    const updated = await dbStore.updateAgentInfo(req.params.id, req.params.infoId, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'agent information not found' });
+    res.json(updated);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/db/connections/:id/agent-info/:infoId', async (req, res) => {
+  try {
+    const ok = await dbStore.deleteAgentInfo(req.params.id, req.params.infoId);
+    if (!ok) return res.status(404).json({ error: 'agent information not found' });
+    res.json({ ok: true });
+  } catch (err) { sendDbError(res, err); }
+});
+
+// Convenience read for the develop agents: the applicable agent info for the
+// ACTIVE connection, filtered to development progress via ?uptoSeq=<seq>.
+app.get('/api/db/active/agent-info', async (req, res) => {
+  try {
+    const activeId = await dbStore.getActiveId();
+    if (!activeId) return res.json({ info: [], activeId: null });
+    const { uptoSeq } = req.query;
+    const info = uptoSeq != null
+      ? await dbStore.listAgentInfoUpToSeq(activeId, String(uptoSeq))
+      : await dbStore.listAgentInfo(activeId);
+    res.json({ info, activeId });
+  } catch (err) { sendDbError(res, err); }
+});
+
 // ── Methodology files in the master DB (agents + commands) ────────────────────
 // The master DB is the source of truth; saves also write through to .claude/ on
 // disk so Claude Code keeps seeing the live copy. Editable from within the app.

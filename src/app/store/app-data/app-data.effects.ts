@@ -32,8 +32,9 @@ export class AppDataEffects {
         forkJoin({
           epics: this.db.listEpics(connectionId).pipe(map(r => r.epics)),
           rules: this.db.listBusinessRules(connectionId).pipe(map(r => r.rules)),
+          agentInfo: this.db.listAgentInfo(connectionId).pipe(map(r => r.info)),
         }).pipe(
-          map(({ epics, rules }) => AppDataActions.loadSuccess({ connectionId, epics, rules })),
+          map(({ epics, rules, agentInfo }) => AppDataActions.loadSuccess({ connectionId, epics, rules, agentInfo })),
           catchError((err) => of(AppDataActions.loadFailure({ error: errMsg(err) }))),
         ),
       ),
@@ -106,6 +107,42 @@ export class AppDataEffects {
       mergeMap(({ connectionId, ruleId }) =>
         this.db.deleteBusinessRule(connectionId, ruleId).pipe(
           map(() => AppDataActions.deleteRuleSuccess({ ruleId })),
+          catchError((err) => of(AppDataActions.mutationFailure({ error: errMsg(err) }))),
+        ),
+      ),
+    ),
+  );
+
+  createAgentInfo$ = createEffect(() =>
+    this.actions$.pipe(
+      ofType(AppDataActions.createAgentInfo),
+      mergeMap(({ connectionId, input }) =>
+        this.db.createAgentInfo(connectionId, input).pipe(
+          map((info) => AppDataActions.createAgentInfoSuccess({ info })),
+          catchError((err) => of(AppDataActions.mutationFailure({ error: errMsg(err) }))),
+        ),
+      ),
+    ),
+  );
+
+  updateAgentInfo$ = createEffect(() =>
+    this.actions$.pipe(
+      ofType(AppDataActions.updateAgentInfo),
+      mergeMap(({ connectionId, infoId, input }) =>
+        this.db.updateAgentInfo(connectionId, infoId, input).pipe(
+          map((info) => AppDataActions.updateAgentInfoSuccess({ info })),
+          catchError((err) => of(AppDataActions.mutationFailure({ error: errMsg(err) }))),
+        ),
+      ),
+    ),
+  );
+
+  deleteAgentInfo$ = createEffect(() =>
+    this.actions$.pipe(
+      ofType(AppDataActions.deleteAgentInfo),
+      mergeMap(({ connectionId, infoId }) =>
+        this.db.deleteAgentInfo(connectionId, infoId).pipe(
+          map(() => AppDataActions.deleteAgentInfoSuccess({ infoId })),
           catchError((err) => of(AppDataActions.mutationFailure({ error: errMsg(err) }))),
         ),
       ),

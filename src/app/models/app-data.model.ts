@@ -52,3 +52,22 @@ export interface AppBusinessRuleInput {
   touches?: Record<string, string[]>;
   delta?: Record<string, unknown>;
 }
+
+// Extra, agent-facing context attached to one Business Rule. During development
+// these descriptions are loaded into the developer agents once the BR under
+// development has reached (seq >=) the referenced BR. `brName`/`brSeq` are the
+// referenced rule, joined server-side for display.
+export interface BrAgentInfo {
+  id: string;
+  businessRuleId: string;
+  description: string;
+  brName: string | null;
+  brSeq: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BrAgentInfoInput {
+  businessRuleId: string;
+  description: string;
+}

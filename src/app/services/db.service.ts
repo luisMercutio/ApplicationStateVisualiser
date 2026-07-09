@@ -4,7 +4,7 @@ import { Observable } from 'rxjs';
 import {
   DbConnection, DbConnectionInput, DbPreview, DbStoreStatus, DbTableInfo, DbTestResult,
 } from '../models/db-connection.model';
-import { AppBusinessRule, AppBusinessRuleInput, Epic, EpicInput } from '../models/app-data.model';
+import { AppBusinessRule, AppBusinessRuleInput, BrAgentInfo, BrAgentInfoInput, Epic, EpicInput } from '../models/app-data.model';
 import { MethodologyFile, MethodologyFileMeta, MethodologyKind } from '../models/methodology-file.model';
 
 // Mirror FileService's host derivation so the DB API works over localhost and
@@ -101,6 +101,23 @@ export class DbService {
 
   deleteBusinessRule(id: string, brId: string): Observable<{ ok: boolean }> {
     return this.http.delete<{ ok: boolean }>(`${API_BASE}/api/db/connections/${id}/business-rules/${brId}`);
+  }
+
+  // ── Additional agent information (extra context attached to a BR) ──
+  listAgentInfo(id: string): Observable<{ info: BrAgentInfo[] }> {
+    return this.http.get<{ info: BrAgentInfo[] }>(`${API_BASE}/api/db/connections/${id}/agent-info`);
+  }
+
+  createAgentInfo(id: string, input: BrAgentInfoInput): Observable<BrAgentInfo> {
+    return this.http.post<BrAgentInfo>(`${API_BASE}/api/db/connections/${id}/agent-info`, input);
+  }
+
+  updateAgentInfo(id: string, infoId: string, input: BrAgentInfoInput): Observable<BrAgentInfo> {
+    return this.http.put<BrAgentInfo>(`${API_BASE}/api/db/connections/${id}/agent-info/${infoId}`, input);
+  }
+
+  deleteAgentInfo(id: string, infoId: string): Observable<{ ok: boolean }> {
+    return this.http.delete<{ ok: boolean }>(`${API_BASE}/api/db/connections/${id}/agent-info/${infoId}`);
   }
 
   // ── Methodology files (master DB: agents + commands) ──
