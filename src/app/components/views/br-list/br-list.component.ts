@@ -5,6 +5,7 @@ import {
 import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { MatTooltipModule } from '@angular/material/tooltip';
+import { MatMenuModule } from '@angular/material/menu';
 import { MatDialog } from '@angular/material/dialog';
 import { Store } from '@ngrx/store';
 import { Subscription } from 'rxjs';
@@ -35,7 +36,7 @@ const UNGROUPED = 'ungrouped';
 @Component({
   selector: 'app-br-list',
   standalone: true,
-  imports: [CdkDropList, CdkDrag, CdkDragHandle, MatIconModule, MatButtonModule, MatTooltipModule],
+  imports: [CdkDropList, CdkDrag, CdkDragHandle, MatIconModule, MatButtonModule, MatTooltipModule, MatMenuModule],
   template: `
     <div class="brl-root">
       <div class="brl-toolbar">
@@ -69,9 +70,12 @@ const UNGROUPED = 'ungrouped';
                   <span class="e-title">{{ e.title }}</span>
                   <span class="e-count">{{ list.rules.length }}</span>
                   <span class="spacer"></span>
-                  <button mat-icon-button class="xs" matTooltip="Add BR to this epic" (click)="addRule(e.id)"><mat-icon>add</mat-icon></button>
-                  <button mat-icon-button class="xs" matTooltip="Edit epic" (click)="editEpic(e)"><mat-icon>edit</mat-icon></button>
-                  <button mat-icon-button class="xs" matTooltip="Delete epic (keeps its rules)" (click)="deleteEpic(e)"><mat-icon>delete</mat-icon></button>
+                  <button mat-icon-button class="xs" matTooltip="Epic actions" [matMenuTriggerFor]="epicMenu"><mat-icon>more_vert</mat-icon></button>
+                  <mat-menu #epicMenu="matMenu">
+                    <button mat-menu-item (click)="addRule(e.id)"><mat-icon>add</mat-icon><span>Add BR to this epic</span></button>
+                    <button mat-menu-item (click)="editEpic(e)"><mat-icon>edit</mat-icon><span>Edit epic</span></button>
+                    <button mat-menu-item (click)="deleteEpic(e)"><mat-icon>delete</mat-icon><span>Delete epic (keeps its rules)</span></button>
+                  </mat-menu>
                 } @else {
                   <mat-icon>label_off</mat-icon>
                   <span class="e-title">Ungrouped</span>
@@ -94,14 +98,19 @@ const UNGROUPED = 'ungrouped';
                         @if (r.features.length) { <span class="r-feat">{{ r.features[0] }}</span> }
                       </div>
                     </div>
-                    <button mat-icon-button class="xs info-btn" [class.has-info]="infoCounts()[r.id]"
-                            [matTooltip]="(infoCounts()[r.id] || 0) + ' agent info entr' + ((infoCounts()[r.id] === 1) ? 'y' : 'ies')"
-                            (click)="openAgentInfo(r)">
-                      <mat-icon>psychology</mat-icon>
+                    <button mat-icon-button class="xs row-menu" [class.has-info]="infoCounts()[r.id]"
+                            matTooltip="Actions" [matMenuTriggerFor]="rowMenu">
+                      <mat-icon>more_vert</mat-icon>
                       @if (infoCounts()[r.id]) { <span class="info-badge">{{ infoCounts()[r.id] }}</span> }
                     </button>
-                    <button mat-icon-button class="xs" matTooltip="Edit" (click)="editRule(r)"><mat-icon>edit</mat-icon></button>
-                    <button mat-icon-button class="xs" matTooltip="Delete" (click)="deleteRule(r)"><mat-icon>delete</mat-icon></button>
+                    <mat-menu #rowMenu="matMenu">
+                      <button mat-menu-item (click)="openAgentInfo(r)">
+                        <mat-icon>psychology</mat-icon>
+                        <span>Agent info@if (infoCounts()[r.id]) { ({{ infoCounts()[r.id] }})}</span>
+                      </button>
+                      <button mat-menu-item (click)="editRule(r)"><mat-icon>edit</mat-icon><span>Edit</span></button>
+                      <button mat-menu-item (click)="deleteRule(r)"><mat-icon>delete</mat-icon><span>Delete</span></button>
+                    </mat-menu>
                   </div>
                 }
                 @if (!list.rules.length) { <div class="empty-drop">Drop rules here</div> }
@@ -120,7 +129,7 @@ const UNGROUPED = 'ungrouped';
     .brl-toolbar .count { color: #999; font-size: 12px; }
     .spacer { flex: 1; } .sm { font-size: 12px; } .xs { width: 26px; height: 26px; line-height: 26px; }
     .xs mat-icon { font-size: 16px; width: 16px; height: 16px; }
-    .info-btn { position: relative; color: #bbb; } .info-btn.has-info { color: #7b1fa2; }
+    .row-menu { position: relative; color: #888; } .row-menu.has-info { color: #7b1fa2; }
     .info-badge { position: absolute; top: 0; right: 0; background: #7b1fa2; color: white; font-size: 9px;
                   line-height: 1; padding: 1px 3px; border-radius: 8px; min-width: 8px; text-align: center; }
     .msg { padding: 24px; color: #999; text-align: center; } .msg.err { color: #c62828; }

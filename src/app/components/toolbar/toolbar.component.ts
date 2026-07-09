@@ -5,6 +5,8 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatSelectModule } from '@angular/material/select';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatTooltipModule } from '@angular/material/tooltip';
+import { MatMenuModule } from '@angular/material/menu';
+import { MatDividerModule } from '@angular/material/divider';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { Store } from '@ngrx/store';
 import { FormsModule } from '@angular/forms';
@@ -20,8 +22,8 @@ import { filter } from 'rxjs';
   selector: 'app-toolbar',
   standalone: true,
   imports: [MatToolbarModule, MatButtonModule, MatIconModule, MatSelectModule,
-            MatFormFieldModule, MatTooltipModule, MatDialogModule, FormsModule,
-            DbSelectorComponent],
+            MatFormFieldModule, MatTooltipModule, MatMenuModule, MatDividerModule,
+            MatDialogModule, FormsModule, DbSelectorComponent],
   template: `
     <mat-toolbar color="primary" class="app-toolbar">
       <mat-icon class="title-icon">account_tree</mat-icon>
@@ -30,20 +32,20 @@ import { filter } from 'rxjs';
       <!-- Data-source database selector: this IS the project selector -->
       <app-db-selector></app-db-selector>
 
-      <span class="nav-divider"></span>
+      <span class="nav-divider desktop-only"></span>
 
-      <!-- Page navigation -->
+      <!-- Page navigation (inline on desktop, collapsed into the menu on mobile) -->
       @for (nav of navPages; track nav.page) {
-        <button mat-button class="nav-btn" [class.active]="page() === nav.page" (click)="navigate.emit(nav.page)">
+        <button mat-button class="nav-btn desktop-only" [class.active]="page() === nav.page" (click)="navigate.emit(nav.page)">
           <mat-icon>{{ nav.icon }}</mat-icon> {{ nav.label }}
         </button>
       }
 
       <span class="spacer"></span>
 
-      <!-- Features-page-only: layout management + add panel -->
+      <!-- Features-page-only: layout management + add panel (desktop inline) -->
       @if (page() === 'features') {
-        <mat-form-field appearance="outline" class="layout-select" subscriptSizing="dynamic">
+        <mat-form-field appearance="outline" class="layout-select desktop-only" subscriptSizing="dynamic">
           <mat-label>Layout</mat-label>
           <mat-select [ngModel]="activeLayout()" (ngModelChange)="applyLayout($event)" placeholder="None saved">
             @for (name of layoutNames(); track name) {
@@ -52,27 +54,66 @@ import { filter } from 'rxjs';
           </mat-select>
         </mat-form-field>
 
-        <button mat-icon-button matTooltip="Save current layout as…"
+        <button mat-icon-button class="desktop-only" matTooltip="Save current layout as…"
                 [disabled]="layoutSaving()" (click)="openSaveDialog()">
           <mat-icon>{{ layoutSaving() ? 'hourglass_top' : 'bookmark_add' }}</mat-icon>
         </button>
-        <button mat-icon-button matTooltip="Delete selected layout"
+        <button mat-icon-button class="desktop-only" matTooltip="Delete selected layout"
                 [disabled]="!activeLayout()" (click)="deleteLayout()">
           <mat-icon>bookmark_remove</mat-icon>
         </button>
 
-        <button mat-stroked-button class="add-btn" (click)="addPanel.emit()">
+        <button mat-stroked-button class="add-btn desktop-only" (click)="addPanel.emit()">
           <mat-icon>add</mat-icon> Add Panel
         </button>
 
-        <span class="divider"></span>
+        <span class="divider desktop-only"></span>
       }
 
-      <!-- Settings (Methodology editor) -->
-      <button mat-icon-button matTooltip="Settings" [class.active-gear]="page() === 'settings'"
+      <!-- Settings (Methodology editor) — desktop gear -->
+      <button mat-icon-button class="desktop-only" matTooltip="Settings" [class.active-gear]="page() === 'settings'"
               (click)="navigate.emit('settings')">
         <mat-icon>settings</mat-icon>
       </button>
+
+      <!-- Mobile: everything above collapses into a single overflow menu -->
+      <button mat-icon-button class="mobile-only" matTooltip="Menu" [matMenuTriggerFor]="mobileMenu"
+              aria-label="Open navigation menu">
+        <mat-icon>menu</mat-icon>
+      </button>
+      <mat-menu #mobileMenu="matMenu">
+        @for (nav of navPages; track nav.page) {
+          <button mat-menu-item [class.active-item]="page() === nav.page" (click)="navigate.emit(nav.page)">
+            <mat-icon>{{ nav.icon }}</mat-icon>
+            <span>{{ nav.label }}</span>
+          </button>
+        }
+        <mat-divider></mat-divider>
+        @if (page() === 'features') {
+          <button mat-menu-item (click)="addPanel.emit()">
+            <mat-icon>add</mat-icon><span>Add Panel</span>
+          </button>
+          <button mat-menu-item [disabled]="layoutSaving()" (click)="openSaveDialog()">
+            <mat-icon>bookmark_add</mat-icon><span>Save layout as…</span>
+          </button>
+          <button mat-menu-item [disabled]="!activeLayout()" (click)="deleteLayout()">
+            <mat-icon>bookmark_remove</mat-icon><span>Delete layout</span>
+          </button>
+          @if (layoutNames().length) {
+            <mat-divider></mat-divider>
+            @for (name of layoutNames(); track name) {
+              <button mat-menu-item (click)="applyLayout(name)">
+                <mat-icon>{{ activeLayout() === name ? 'check' : 'bookmark_border' }}</mat-icon>
+                <span>{{ name }}</span>
+              </button>
+            }
+          }
+          <mat-divider></mat-divider>
+        }
+        <button mat-menu-item [class.active-item]="page() === 'settings'" (click)="navigate.emit('settings')">
+          <mat-icon>settings</mat-icon><span>Settings</span>
+        </button>
+      </mat-menu>
     </mat-toolbar>
   `,
   styles: [`
@@ -90,6 +131,14 @@ import { filter } from 'rxjs';
     .divider { width: 1px; height: 24px; background: rgba(255,255,255,0.3); margin: 0 4px; }
     .add-btn { color: white; border-color: rgba(255,255,255,0.6); }
     .active-gear { color: #ffeb3b; }
+
+    /* Responsive: below 768px the inline controls collapse into a menu. */
+    .mobile-only { display: none; }
+    @media (max-width: 768px) {
+      .desktop-only { display: none !important; }
+      .mobile-only { display: inline-flex !important; }
+      .title { display: none; }
+    }
   `],
 })
 export class ToolbarComponent {

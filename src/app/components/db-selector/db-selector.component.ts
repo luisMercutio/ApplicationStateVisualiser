@@ -53,6 +53,7 @@ import { DbBrowserDialogComponent } from '../db-browser-dialog/db-browser-dialog
     .db-select ::ng-deep .mat-mdc-select-disabled .mat-mdc-select-value { color: rgba(255,255,255,0.5); }
     .db-select ::ng-deep .mat-mdc-notched-outline > * { border-color: rgba(255,255,255,0.5) !important; }
     .warn { color: #ffcc80; }
+    @media (max-width: 768px) { .db-select { width: 130px; } }
   `],
 })
 export class DbSelectorComponent {
