@@ -39,7 +39,9 @@ function clampInt(value, fallback, min, max) {
 }
 
 app.use(cors());
-app.use(express.json());
+// Business Rules may carry self-contained snapshots (e.g. full methodology-file
+// content in delta) so the app can be reseeded from a single row; allow large bodies.
+app.use(express.json({ limit: '25mb' }));
 
 app.get('/api/ping', (_req, res) => res.json({ ok: true }));
 
