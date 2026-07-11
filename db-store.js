@@ -401,10 +401,10 @@ async function ensureAppSchema(pool) {
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS business_rules (
-      id                VARCHAR(36)  NOT NULL PRIMARY KEY,
+      creation_index    VARCHAR(36)  NOT NULL PRIMARY KEY,
       name              VARCHAR(190) NOT NULL,
       epic_id           VARCHAR(36),
-      seq               VARCHAR(64),
+      execution_order   INT,
       rule              TEXT         NOT NULL,
       rationale         TEXT,
       category          VARCHAR(32),
@@ -420,10 +420,16 @@ async function ensureAppSchema(pool) {
       CONSTRAINT fk_br_epic FOREIGN KEY (epic_id) REFERENCES epics(id) ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
+  // Bring an existing business_rules table up to the current shape (id →
+  // creation_index rename, seq → execution_order) before anything references it.
+  await migrateBusinessRulesSchema(pool);
+
   // Extra, agent-facing context attached to a Business Rule. Each row references
-  // one BR and carries a free-text description. During development this is loaded
-  // into the developer agents once the BR under development has reached (seq >=)
-  // the referenced BR — see listAgentInfoUpToSeq.
+  // one BR (by its creation_index) and carries a free-text description. During
+  // development this is loaded into the developer agents once the BR under
+  // development has reached (execution_order >=) the referenced BR — see
+  // listAgentInfoUpToExecutionOrder. Created after the migration so its FK can
+  // always reference business_rules(creation_index).
   await pool.query(`
     CREATE TABLE IF NOT EXISTS br_additional_agent_information (
       id               VARCHAR(36) NOT NULL PRIMARY KEY,
@@ -432,7 +438,7 @@ async function ensureAppSchema(pool) {
       created_at       DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at       DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       KEY idx_agentinfo_br (business_rule_id),
-      CONSTRAINT fk_agentinfo_br FOREIGN KEY (business_rule_id) REFERENCES business_rules(id) ON DELETE CASCADE
+      CONSTRAINT fk_agentinfo_br FOREIGN KEY (business_rule_id) REFERENCES business_rules(creation_index) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
   // Free-form notes / ideas kept against the application. `related_brs` is an
@@ -447,6 +453,59 @@ async function ensureAppSchema(pool) {
       created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+}
+
+// One-time, idempotent migration of an existing business_rules table to the
+// current shape: the UUID primary key `id` becomes `creation_index` (values are
+// preserved — still UUIDs), and the Dewey `seq` ordering string becomes an
+// integer `execution_order`. A freshly-created table already has the new columns,
+// so every branch below is a no-op there.
+async function migrateBusinessRulesSchema(pool) {
+  const hasColumn = async (table, col) => {
+    const [[{ n }]] = await pool.query(
+      `SELECT COUNT(*) AS n FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+      [table, col]);
+    return n > 0;
+  };
+
+  // 1) id → creation_index. The agent-info FK references the old `id`, so drop it,
+  //    rename the column, then re-point the FK at creation_index.
+  if ((await hasColumn('business_rules', 'id')) && !(await hasColumn('business_rules', 'creation_index'))) {
+    const [fks] = await pool.query(
+      `SELECT CONSTRAINT_NAME AS name FROM information_schema.KEY_COLUMN_USAGE
+        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'br_additional_agent_information'
+          AND REFERENCED_TABLE_NAME = 'business_rules'`);
+    for (const fk of fks) {
+      await pool.query(`ALTER TABLE br_additional_agent_information DROP FOREIGN KEY ${backtick(fk.name)}`);
+    }
+    await pool.query('ALTER TABLE business_rules CHANGE COLUMN id creation_index VARCHAR(36) NOT NULL');
+    if (fks.length) {
+      await pool.query(
+        `ALTER TABLE br_additional_agent_information
+           ADD CONSTRAINT fk_agentinfo_br FOREIGN KEY (business_rule_id)
+           REFERENCES business_rules(creation_index) ON DELETE CASCADE`);
+    }
+  }
+
+  // 2) seq → execution_order. Add the integer column and backfill a global 1..N
+  //    order from the prior seq (numeric-aware; nulls last), then drop seq.
+  if (!(await hasColumn('business_rules', 'execution_order'))) {
+    await pool.query('ALTER TABLE business_rules ADD COLUMN execution_order INT AFTER epic_id');
+    const orderBy = (await hasColumn('business_rules', 'seq'))
+      ? 'seq IS NULL, CAST(seq AS DECIMAL(20,6)), name'
+      : 'name';
+    await pool.query(
+      `UPDATE business_rules b
+         JOIN (
+           SELECT creation_index, ROW_NUMBER() OVER (ORDER BY ${orderBy}) AS rn
+             FROM business_rules
+         ) o ON o.creation_index = b.creation_index
+       SET b.execution_order = o.rn`);
+  }
+  if (await hasColumn('business_rules', 'seq')) {
+    await pool.query('ALTER TABLE business_rules DROP COLUMN seq');
+  }
 }
 
 // Ensure the target database itself exists before we open a data pool to it.
@@ -629,10 +688,10 @@ async function deleteNote(id, noteId) {
 // ── Business rules ────────────────────────────────────────────────────────────
 function brRowToDto(r) {
   return {
-    id: r.id,
+    creationIndex: r.creation_index,
     name: r.name,
     epicId: r.epic_id ?? null,
-    seq: r.seq ?? null,
+    executionOrder: r.execution_order ?? null,
     rule: r.rule,
     rationale: r.rationale ?? null,
     category: r.category ?? null,
@@ -652,10 +711,14 @@ function normaliseBr(input) {
   if (!name) throw badRequest('name is required');
   if (!rule) throw badRequest('rule is required');
   const strArr = (v) => (Array.isArray(v) ? v.map(String) : []);
+  const execRaw = input?.executionOrder;
+  const executionOrder = execRaw == null || execRaw === '' || !Number.isFinite(Number(execRaw))
+    ? null
+    : Math.trunc(Number(execRaw));
   return {
     name, rule,
     epicId: input?.epicId ? String(input.epicId) : null,
-    seq: input?.seq == null ? null : String(input.seq).trim() || null,
+    executionOrder,
     rationale: input?.rationale == null ? null : String(input.rationale),
     category: input?.category ? String(input.category) : null,
     features: strArr(input?.features),
@@ -669,12 +732,12 @@ function normaliseBr(input) {
 async function listBusinessRules(id) {
   ensureReady();
   const pool = await appPool(id);
-  const [rows] = await pool.query('SELECT * FROM business_rules ORDER BY seq IS NULL, seq, name');
+  const [rows] = await pool.query('SELECT * FROM business_rules ORDER BY execution_order IS NULL, execution_order, name');
   return rows.map(brRowToDto);
 }
 
 async function getBrRow(pool, brId) {
-  const [rows] = await pool.query('SELECT * FROM business_rules WHERE id = ?', [brId]);
+  const [rows] = await pool.query('SELECT * FROM business_rules WHERE creation_index = ?', [brId]);
   return rows[0] || null;
 }
 
@@ -683,12 +746,18 @@ async function createBusinessRule(id, input) {
   const pool = await appPool(id);
   const b = normaliseBr(input);
   const brId = crypto.randomUUID();
+  // execution_order is global; default a new rule to the end of the list.
+  let executionOrder = b.executionOrder;
+  if (executionOrder == null) {
+    const [[{ next }]] = await pool.query('SELECT COALESCE(MAX(execution_order), 0) + 1 AS next FROM business_rules');
+    executionOrder = next;
+  }
   try {
     await pool.query(
       `INSERT INTO business_rules
-         (id, name, epic_id, seq, rule, rationale, category, features, modifies_features, depends_on, touches, delta)
+         (creation_index, name, epic_id, execution_order, rule, rationale, category, features, modifies_features, depends_on, touches, delta)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [brId, b.name, b.epicId, b.seq, b.rule, b.rationale, b.category,
+      [brId, b.name, b.epicId, executionOrder, b.rule, b.rationale, b.category,
         toJsonText(b.features), toJsonText(b.modifiesFeatures), toJsonText(b.dependsOn),
         toJsonText(b.touches), toJsonText(b.delta)],
     );
@@ -708,10 +777,10 @@ async function updateBusinessRule(id, brId, input) {
   try {
     [res] = await pool.query(
       `UPDATE business_rules SET
-         name = ?, epic_id = ?, seq = ?, rule = ?, rationale = ?, category = ?,
+         name = ?, epic_id = ?, execution_order = ?, rule = ?, rationale = ?, category = ?,
          features = ?, modifies_features = ?, depends_on = ?, touches = ?, delta = ?
-       WHERE id = ?`,
-      [b.name, b.epicId, b.seq, b.rule, b.rationale, b.category,
+       WHERE creation_index = ?`,
+      [b.name, b.epicId, b.executionOrder, b.rule, b.rationale, b.category,
         toJsonText(b.features), toJsonText(b.modifiesFeatures), toJsonText(b.dependsOn),
         toJsonText(b.touches), toJsonText(b.delta), brId],
     );
@@ -727,25 +796,19 @@ async function updateBusinessRule(id, brId, input) {
 async function deleteBusinessRule(id, brId) {
   ensureReady();
   const pool = await appPool(id);
-  const [res] = await pool.query('DELETE FROM business_rules WHERE id = ?', [brId]);
+  const [res] = await pool.query('DELETE FROM business_rules WHERE creation_index = ?', [brId]);
   return res.affectedRows > 0;
 }
 
 // ── Additional agent information (extra context attached to a Business Rule) ───
-// Numeric-aware seq compare: nulls sort last. Mirrors the Dewey ordering the BRs
-// use elsewhere so "seq >= referenced seq" means "development has reached this BR".
-function seqCompare(a, b) {
+// Numeric compare for execution_order: nulls sort last. Mirrors the ordering the
+// BRs use elsewhere so "execution_order >= referenced order" means "development
+// has reached this BR".
+function executionOrderCompare(a, b) {
   if (a == null && b == null) return 0;
   if (a == null) return 1;
   if (b == null) return -1;
-  const A = String(a).split('.').map(Number);
-  const B = String(b).split('.').map(Number);
-  for (let i = 0; i < Math.max(A.length, B.length); i++) {
-    const x = Number.isFinite(A[i]) ? A[i] : -1;
-    const y = Number.isFinite(B[i]) ? B[i] : -1;
-    if (x !== y) return x - y;
-  }
-  return 0;
+  return Number(a) - Number(b);
 }
 
 function agentInfoRowToDto(r) {
@@ -754,22 +817,22 @@ function agentInfoRowToDto(r) {
     businessRuleId: r.business_rule_id,
     description: r.description,
     brName: r.br_name ?? null,
-    brSeq: r.br_seq ?? null,
+    brExecutionOrder: r.br_execution_order ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
 }
 
-// Every read joins the BR so callers get the referenced rule's name + seq.
+// Every read joins the BR so callers get the referenced rule's name + execution order.
 const AGENT_INFO_SELECT = `
-  SELECT ai.*, br.name AS br_name, br.seq AS br_seq
+  SELECT ai.*, br.name AS br_name, br.execution_order AS br_execution_order
     FROM br_additional_agent_information ai
-    JOIN business_rules br ON br.id = ai.business_rule_id`;
+    JOIN business_rules br ON br.creation_index = ai.business_rule_id`;
 
 async function listAgentInfo(id) {
   ensureReady();
   const pool = await appPool(id);
-  const [rows] = await pool.query(`${AGENT_INFO_SELECT} ORDER BY br.seq IS NULL, br.seq, ai.created_at`);
+  const [rows] = await pool.query(`${AGENT_INFO_SELECT} ORDER BY br.execution_order IS NULL, br.execution_order, ai.created_at`);
   return rows.map(agentInfoRowToDto);
 }
 
@@ -826,11 +889,11 @@ async function deleteAgentInfo(id, infoId) {
 }
 
 // The develop-time query: every agent-info entry whose referenced BR has already
-// been reached by development, i.e. referenced BR seq <= the seq under development.
-// Filtered in JS so the Dewey seq ordering matches the rest of the app.
-async function listAgentInfoUpToSeq(id, seq) {
+// been reached by development, i.e. referenced BR execution_order <= the order
+// under development.
+async function listAgentInfoUpToExecutionOrder(id, executionOrder) {
   const all = await listAgentInfo(id);
-  return all.filter((a) => seqCompare(a.brSeq, seq) <= 0);
+  return all.filter((a) => executionOrderCompare(a.brExecutionOrder, executionOrder) <= 0);
 }
 
 module.exports = {
@@ -842,5 +905,5 @@ module.exports = {
   listEpics, createEpic, updateEpic, deleteEpic,
   listNotes, createNote, updateNote, deleteNote,
   listBusinessRules, createBusinessRule, updateBusinessRule, deleteBusinessRule,
-  listAgentInfo, createAgentInfo, updateAgentInfo, deleteAgentInfo, listAgentInfoUpToSeq,
+  listAgentInfo, createAgentInfo, updateAgentInfo, deleteAgentInfo, listAgentInfoUpToExecutionOrder,
 };

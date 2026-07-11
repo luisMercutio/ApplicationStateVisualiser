@@ -60,9 +60,9 @@ Edit `.claude/architecture/epics.md`: set the Epic's Status to `In Development` 
 The active application may hold **Additional Agent Information** (the
 `br_additional_agent_information` table, authored in the app's BR List): free-text
 guidance attached to Business Rules. An entry applies once development has reached its
-referenced BR (`referenced BR seq <= the Epic's highest BR seq`). The developer agents
-load this themselves (their Step 0.5) via
-`curl -s "http://localhost:3001/api/db/active/agent-info?uptoSeq=<N>"` and must treat
+referenced BR (`referenced BR executionOrder <= the Epic's highest BR executionOrder`).
+The developer agents load this themselves (their Step 0.5) via
+`curl -s "http://localhost:3001/api/db/active/agent-info?uptoExecutionOrder=<N>"` and must treat
 each returned description as authoritative additional context. Ensure the active DB
 connection is set to the application being developed before running this command.
 

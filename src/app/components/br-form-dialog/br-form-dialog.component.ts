@@ -24,14 +24,9 @@ export interface BrFormData {
     <h2 mat-dialog-title>{{ editing ? 'Edit Business Rule' : 'Add Business Rule' }}</h2>
     <mat-dialog-content>
       <div class="form-grid">
-        <mat-form-field appearance="outline">
+        <mat-form-field appearance="outline" class="col-span-2">
           <mat-label>Name / ID</mat-label>
           <input matInput [(ngModel)]="name" placeholder="e.g. BR-001" autocomplete="off" />
-        </mat-form-field>
-
-        <mat-form-field appearance="outline">
-          <mat-label>Seq</mat-label>
-          <input matInput [(ngModel)]="seq" placeholder="e.g. 1.2" autocomplete="off" />
         </mat-form-field>
 
         <mat-form-field appearance="outline" class="col-span-2">
@@ -91,7 +86,6 @@ export class BrFormDialogComponent {
   categories = Object.keys(BR_CATEGORY_COLORS);
 
   name = this.data.rule?.name ?? '';
-  seq = this.data.rule?.seq ?? '';
   rule = this.data.rule?.rule ?? '';
   rationale = this.data.rule?.rationale ?? '';
   category = this.data.rule?.category ?? null;
@@ -112,7 +106,9 @@ export class BrFormDialogComponent {
     const input: AppBusinessRuleInput = {
       name: this.name.trim(),
       rule: this.rule.trim(),
-      seq: this.seq.trim() || null,
+      // execution order is managed by drag-drop; preserve it on edit, let the
+      // server assign it on create (null → appended to the end).
+      executionOrder: this.data.rule?.executionOrder ?? null,
       rationale: this.rationale.trim() || null,
       category: this.category || null,
       epicId: this.epicId || null,

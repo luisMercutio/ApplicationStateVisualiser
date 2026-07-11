@@ -31,7 +31,8 @@ const UNGROUPED = 'ungrouped';
  * Business Rules for the ACTIVE application connection, grouped under their Epics.
  * Full CRUD (add / edit / delete for both BRs and Epics) writes to that
  * application's own database. Rules drag to reorder and across Epics (which
- * reassigns the Epic and rewrites the persisted seq order).
+ * reassigns the Epic and rewrites the global executionOrder). Dropping a rule
+ * into the ungrouped bucket spawns a fresh Epic that adopts it.
  */
 @Component({
   selector: 'app-br-list',
@@ -86,10 +87,10 @@ const UNGROUPED = 'ungrouped';
 
               <div class="brl-list" cdkDropList [id]="listId(list)" [cdkDropListData]="list.rules"
                    [cdkDropListConnectedTo]="allListIds()" (cdkDropListDropped)="drop($event)">
-                @for (r of list.rules; track r.id) {
+                @for (r of list.rules; track r.creationIndex) {
                   <div class="brl-row" cdkDrag [style.borderLeftColor]="color(r)">
-                    <div class="handle" cdkDragHandle matTooltip="Drag to reorder / move epic"><mat-icon>drag_indicator</mat-icon></div>
-                    <span class="r-seq">{{ r.seq }}</span>
+                    <div class="handle" cdkDragHandle matTooltip="Drag to reorder / drop outside an epic to start a new one"><mat-icon>drag_indicator</mat-icon></div>
+                    <span class="r-order">{{ r.executionOrder }}</span>
                     <div class="r-body">
                       <div class="r-rule">{{ r.rule }}</div>
                       <div class="r-meta">
@@ -98,15 +99,15 @@ const UNGROUPED = 'ungrouped';
                         @if (r.features.length) { <span class="r-feat">{{ r.features[0] }}</span> }
                       </div>
                     </div>
-                    <button mat-icon-button class="xs row-menu" [class.has-info]="infoCounts()[r.id]"
+                    <button mat-icon-button class="xs row-menu" [class.has-info]="infoCounts()[r.creationIndex]"
                             matTooltip="Actions" [matMenuTriggerFor]="rowMenu">
                       <mat-icon>more_vert</mat-icon>
-                      @if (infoCounts()[r.id]) { <span class="info-badge">{{ infoCounts()[r.id] }}</span> }
+                      @if (infoCounts()[r.creationIndex]) { <span class="info-badge">{{ infoCounts()[r.creationIndex] }}</span> }
                     </button>
                     <mat-menu #rowMenu="matMenu">
                       <button mat-menu-item (click)="openAgentInfo(r)">
                         <mat-icon>psychology</mat-icon>
-                        <span>Agent info@if (infoCounts()[r.id]) { ({{ infoCounts()[r.id] }})}</span>
+                        <span>Agent info@if (infoCounts()[r.creationIndex]) { ({{ infoCounts()[r.creationIndex] }})}</span>
                       </button>
                       <button mat-menu-item (click)="editRule(r)"><mat-icon>edit</mat-icon><span>Edit</span></button>
                       <button mat-menu-item (click)="deleteRule(r)"><mat-icon>delete</mat-icon><span>Delete</span></button>
@@ -151,7 +152,7 @@ const UNGROUPED = 'ungrouped';
     .brl-row:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.14); }
     .handle { cursor: grab; color: #bbb; display: flex; align-items: center; flex-shrink: 0; }
     .handle:active { cursor: grabbing; } .handle mat-icon { font-size: 20px; width: 20px; height: 20px; }
-    .r-seq { font-family: monospace; font-weight: 700; font-size: 11px; color: #3f51b5; flex-shrink: 0; min-width: 30px; }
+    .r-order { font-family: monospace; font-weight: 700; font-size: 11px; color: #3f51b5; flex-shrink: 0; min-width: 30px; }
     .r-body { min-width: 0; flex: 1; }
     .r-rule { font-size: 12px; color: #222; line-height: 1.35;
               display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
@@ -247,14 +248,14 @@ export class BrListComponent implements OnInit, OnDestroy {
     const data: BrFormData = { rule, epics: this.epics };
     this.dialog.open(BrFormDialogComponent, { data }).afterClosed().subscribe((input: AppBusinessRuleInput | undefined) => {
       const id = this.connId();
-      if (input && id) this.store.dispatch(AppDataActions.updateRule({ connectionId: id, ruleId: rule.id, input }));
+      if (input && id) this.store.dispatch(AppDataActions.updateRule({ connectionId: id, ruleId: rule.creationIndex, input }));
     });
   }
 
   deleteRule(rule: AppBusinessRule): void {
     const id = this.connId();
     if (id && confirm(`Delete Business Rule "${rule.name}"?`)) {
-      this.store.dispatch(AppDataActions.deleteRule({ connectionId: id, ruleId: rule.id }));
+      this.store.dispatch(AppDataActions.deleteRule({ connectionId: id, ruleId: rule.creationIndex }));
     }
   }
 
@@ -267,28 +268,44 @@ export class BrListComponent implements OnInit, OnDestroy {
 
   // ── Drag reorder / move across epics ──
   drop(ev: CdkDragDrop<AppBusinessRule[]>): void {
-    if (ev.previousContainer === ev.container) {
+    const crossList = ev.previousContainer !== ev.container;
+    if (!crossList) {
       if (ev.previousIndex === ev.currentIndex) return;
       moveItemInArray(ev.container.data, ev.previousIndex, ev.currentIndex);
     } else {
       transferArrayItem(ev.previousContainer.data, ev.container.data, ev.previousIndex, ev.currentIndex);
     }
     this.lists.set([...this.lists()]); // same inner arrays, new ref to refresh view
-    this.persistOrder();
+    // Dragging a rule out of its epic (into the ungrouped bucket) spawns a fresh
+    // epic that adopts it, rather than leaving it ungrouped.
+    const spawnRule = crossList && ev.container.id === UNGROUPED
+      ? ev.container.data[ev.currentIndex] ?? null
+      : null;
+    this.persistOrder(spawnRule?.creationIndex ?? null);
   }
 
-  /** Rewrite epicId + a global running seq for any rule whose position changed. */
-  private persistOrder(): void {
+  /**
+   * Rewrite the global executionOrder (and epicId) for every rule whose position
+   * changed. `spawnRuleId`, if set, is a rule dragged out of its epic: instead of
+   * leaving it ungrouped we create a fresh epic and move it there.
+   */
+  private persistOrder(spawnRuleId: string | null): void {
     const id = this.connId();
     if (!id) return;
-    let i = 0;
+    let order = 0;
     for (const list of this.lists()) {
       for (const r of list.rules) {
-        i++;
-        const newSeq = String(i);
-        if (r.seq !== newSeq || r.epicId !== list.epicId) {
+        order++;
+        if (r.creationIndex === spawnRuleId) {
+          this.store.dispatch(AppDataActions.moveRuleToNewEpic({
+            connectionId: id, ruleId: r.creationIndex,
+            input: ruleToInput(r, { executionOrder: order }), epicTitle: 'New Epic',
+          }));
+          continue;
+        }
+        if (r.executionOrder !== order || r.epicId !== list.epicId) {
           this.store.dispatch(AppDataActions.updateRule({
-            connectionId: id, ruleId: r.id, input: ruleToInput(r, { seq: newSeq, epicId: list.epicId }),
+            connectionId: id, ruleId: r.creationIndex, input: ruleToInput(r, { executionOrder: order, epicId: list.epicId }),
           }));
         }
       }
@@ -298,13 +315,13 @@ export class BrListComponent implements OnInit, OnDestroy {
 
 function ruleToInput(r: AppBusinessRule, overrides: Partial<AppBusinessRuleInput>): AppBusinessRuleInput {
   return {
-    name: r.name, rule: r.rule, seq: r.seq, rationale: r.rationale, category: r.category,
+    name: r.name, rule: r.rule, executionOrder: r.executionOrder, rationale: r.rationale, category: r.category,
     epicId: r.epicId, features: r.features, modifiesFeatures: r.modifiesFeatures,
     dependsOn: r.dependsOn, touches: r.touches, delta: r.delta, ...overrides,
   };
 }
 
-/** Numeric-aware seq compare; nulls sort last. */
+/** Numeric-aware seq compare (Epics still use a Dewey seq string); nulls sort last. */
 function seqCompare(a: string | null, b: string | null): number {
   if (a == null && b == null) return 0;
   if (a == null) return 1;
@@ -317,6 +334,14 @@ function seqCompare(a: string | null, b: string | null): number {
   return 0;
 }
 
+/** Numeric executionOrder compare; nulls sort last. */
+function orderCompare(a: number | null, b: number | null): number {
+  if (a == null && b == null) return 0;
+  if (a == null) return 1;
+  if (b == null) return -1;
+  return a - b;
+}
+
 function sortRules(rules: AppBusinessRule[]): AppBusinessRule[] {
-  return [...rules].sort((a, b) => seqCompare(a.seq, b.seq) || a.name.localeCompare(b.name));
+  return [...rules].sort((a, b) => orderCompare(a.executionOrder, b.executionOrder) || a.name.localeCompare(b.name));
 }

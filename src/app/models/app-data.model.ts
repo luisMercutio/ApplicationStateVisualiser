@@ -23,10 +23,10 @@ export interface EpicInput {
 // A Business Rule row. Fields mirror the file-based RuleEntry so the two BR
 // worlds stay convertible; `epicId` groups a rule under an Epic.
 export interface AppBusinessRule {
-  id: string;
+  creationIndex: string;      // stable identity (UUID), assigned at creation
   name: string;               // slug / human id, unique per application
   epicId: string | null;
-  seq: string | null;
+  executionOrder: number | null; // global ordering; drives display + drag-drop
   rule: string;
   rationale: string | null;
   category: string | null;
@@ -42,7 +42,7 @@ export interface AppBusinessRule {
 export interface AppBusinessRuleInput {
   name: string;
   epicId?: string | null;
-  seq?: string | null;
+  executionOrder?: number | null;
   rule: string;
   rationale?: string | null;
   category?: string | null;
@@ -55,14 +55,14 @@ export interface AppBusinessRuleInput {
 
 // Extra, agent-facing context attached to one Business Rule. During development
 // these descriptions are loaded into the developer agents once the BR under
-// development has reached (seq >=) the referenced BR. `brName`/`brSeq` are the
-// referenced rule, joined server-side for display.
+// development has reached (executionOrder >=) the referenced BR.
+// `brName`/`brExecutionOrder` are the referenced rule, joined server-side for display.
 export interface BrAgentInfo {
   id: string;
   businessRuleId: string;
   description: string;
   brName: string | null;
-  brSeq: string | null;
+  brExecutionOrder: number | null;
   createdAt: string;
   updatedAt: string;
 }

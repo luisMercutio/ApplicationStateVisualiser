@@ -27,6 +27,11 @@ export const AppDataActions = createActionGroup({
     'Delete Rule': props<{ connectionId: string; ruleId: string }>(),
     'Delete Rule Success': props<{ ruleId: string }>(),
 
+    // Dragging a rule out of its epic spawns a fresh epic that adopts it: the
+    // effect creates the epic, then reassigns the rule to it.
+    'Move Rule To New Epic': props<{ connectionId: string; ruleId: string; input: AppBusinessRuleInput; epicTitle: string }>(),
+    'Move Rule To New Epic Success': props<{ epic: Epic; rule: AppBusinessRule }>(),
+
     'Create Note': props<{ connectionId: string; input: NoteInput }>(),
     'Create Note Success': props<{ note: Note }>(),
     'Update Note': props<{ connectionId: string; noteId: string; input: NoteInput }>(),

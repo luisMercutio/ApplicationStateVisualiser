@@ -267,13 +267,14 @@ app.delete('/api/db/connections/:id/business-rules/:brId', async (req, res) => {
 });
 
 // ── Additional agent information (extra agent-facing context per Business Rule) ─
-// `?uptoSeq=<seq>` filters to entries whose referenced BR has been reached by
-// development (referenced BR seq <= uptoSeq) — what the develop agents load.
+// `?uptoExecutionOrder=<n>` filters to entries whose referenced BR has been
+// reached by development (referenced BR execution_order <= n) — what the develop
+// agents load.
 app.get('/api/db/connections/:id/agent-info', async (req, res) => {
   try {
-    const { uptoSeq } = req.query;
-    const info = uptoSeq != null
-      ? await dbStore.listAgentInfoUpToSeq(req.params.id, String(uptoSeq))
+    const { uptoExecutionOrder } = req.query;
+    const info = uptoExecutionOrder != null
+      ? await dbStore.listAgentInfoUpToExecutionOrder(req.params.id, String(uptoExecutionOrder))
       : await dbStore.listAgentInfo(req.params.id);
     res.json({ info });
   } catch (err) { sendDbError(res, err); }
@@ -300,14 +301,14 @@ app.delete('/api/db/connections/:id/agent-info/:infoId', async (req, res) => {
 });
 
 // Convenience read for the develop agents: the applicable agent info for the
-// ACTIVE connection, filtered to development progress via ?uptoSeq=<seq>.
+// ACTIVE connection, filtered to development progress via ?uptoExecutionOrder=<n>.
 app.get('/api/db/active/agent-info', async (req, res) => {
   try {
     const activeId = await dbStore.getActiveId();
     if (!activeId) return res.json({ info: [], activeId: null });
-    const { uptoSeq } = req.query;
-    const info = uptoSeq != null
-      ? await dbStore.listAgentInfoUpToSeq(activeId, String(uptoSeq))
+    const { uptoExecutionOrder } = req.query;
+    const info = uptoExecutionOrder != null
+      ? await dbStore.listAgentInfoUpToExecutionOrder(activeId, String(uptoExecutionOrder))
       : await dbStore.listAgentInfo(activeId);
     res.json({ info, activeId });
   } catch (err) { sendDbError(res, err); }

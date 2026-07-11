@@ -114,6 +114,23 @@ export class AppDataEffects {
     ),
   );
 
+  // Spawn a new epic and move the dragged rule into it, in one flow.
+  moveRuleToNewEpic$ = createEffect(() =>
+    this.actions$.pipe(
+      ofType(AppDataActions.moveRuleToNewEpic),
+      mergeMap(({ connectionId, ruleId, input, epicTitle }) =>
+        this.db.createEpic(connectionId, { title: epicTitle }).pipe(
+          switchMap((epic) =>
+            this.db.updateBusinessRule(connectionId, ruleId, { ...input, epicId: epic.id }).pipe(
+              map((rule) => AppDataActions.moveRuleToNewEpicSuccess({ epic, rule })),
+            ),
+          ),
+          catchError((err) => of(AppDataActions.mutationFailure({ error: errMsg(err) }))),
+        ),
+      ),
+    ),
+  );
+
   createNote$ = createEffect(() =>
     this.actions$.pipe(
       ofType(AppDataActions.createNote),

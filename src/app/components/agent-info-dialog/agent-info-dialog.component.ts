@@ -31,7 +31,7 @@ export interface AgentInfoDialogData {
       <p class="hint">
         Extra context for the AI agents. Each entry is loaded into the developer agents
         at the start of a development task once the BR being built has reached this rule
-        (seq ≥ {{ data.rule.seq || '—' }}).
+        (execution order ≥ {{ data.rule.executionOrder ?? '—' }}).
       </p>
 
       @for (e of entries(); track e.id) {
@@ -84,7 +84,7 @@ export class AgentInfoDialogComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
     // Live-bind to the store so create/update/delete reflect immediately.
     this.sub = this.store.select(selectAgentInfo).subscribe((all) =>
-      this.entries.set(all.filter((i) => i.businessRuleId === this.data.rule.id)),
+      this.entries.set(all.filter((i) => i.businessRuleId === this.data.rule.creationIndex)),
     );
   }
 
@@ -115,7 +115,7 @@ export class AgentInfoDialogComponent implements OnInit, OnDestroy {
     const description = this.newText.trim();
     if (!description) return;
     this.store.dispatch(AppDataActions.createAgentInfo({
-      connectionId: this.data.connectionId, input: { businessRuleId: this.data.rule.id, description },
+      connectionId: this.data.connectionId, input: { businessRuleId: this.data.rule.creationIndex, description },
     }));
     this.newText = '';
   }
