@@ -4,7 +4,7 @@ import { Observable } from 'rxjs';
 import {
   DbConnection, DbConnectionInput, DbPreview, DbStoreStatus, DbTableInfo, DbTestResult,
 } from '../models/db-connection.model';
-import { AppBusinessRule, AppBusinessRuleInput, BrAgentInfo, BrAgentInfoInput, Epic, EpicInput } from '../models/app-data.model';
+import { AppBusinessRule, AppBusinessRuleInput, BrAgentInfo, BrAgentInfoInput, BrSnapshot, BrSnapshotInput, BrSnapshotMeta, Epic, EpicInput } from '../models/app-data.model';
 import { Note, NoteInput } from '../models/note.model';
 import { MethodologyFile, MethodologyFileMeta, MethodologyKind } from '../models/methodology-file.model';
 
@@ -144,6 +144,23 @@ export class DbService {
 
   deleteAgentInfo(id: string, infoId: string): Observable<{ ok: boolean }> {
     return this.http.delete<{ ok: boolean }>(`${API_BASE}/api/db/connections/${id}/agent-info/${infoId}`);
+  }
+
+  // ── BR snapshots (point-in-time copies of the Epic + BR set for diffing) ──
+  listSnapshots(id: string): Observable<{ snapshots: BrSnapshotMeta[] }> {
+    return this.http.get<{ snapshots: BrSnapshotMeta[] }>(`${API_BASE}/api/db/connections/${id}/br-snapshots`);
+  }
+
+  createSnapshot(id: string, input: BrSnapshotInput): Observable<BrSnapshot> {
+    return this.http.post<BrSnapshot>(`${API_BASE}/api/db/connections/${id}/br-snapshots`, input);
+  }
+
+  getSnapshot(id: string, snapId: string): Observable<BrSnapshot> {
+    return this.http.get<BrSnapshot>(`${API_BASE}/api/db/connections/${id}/br-snapshots/${snapId}`);
+  }
+
+  deleteSnapshot(id: string, snapId: string): Observable<{ ok: boolean }> {
+    return this.http.delete<{ ok: boolean }>(`${API_BASE}/api/db/connections/${id}/br-snapshots/${snapId}`);
   }
 
   // ── Methodology files (agents + commands, served from .claude/ on disk) ──

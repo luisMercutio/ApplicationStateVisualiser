@@ -18,6 +18,7 @@ import { selectActiveConnection } from '../../../store/connections/connections.s
 import { BrFormDialogComponent, BrFormData } from '../../br-form-dialog/br-form-dialog.component';
 import { EpicFormDialogComponent } from '../../epic-form-dialog/epic-form-dialog.component';
 import { AgentInfoDialogComponent, AgentInfoDialogData } from '../../agent-info-dialog/agent-info-dialog.component';
+import { SnapshotManagerDialogComponent, SnapshotManagerDialogData } from '../../snapshot-manager-dialog/snapshot-manager-dialog.component';
 
 interface RuleList {
   epicId: string | null;      // null = the ungrouped bucket
@@ -46,6 +47,7 @@ const UNGROUPED = 'ungrouped';
         <span class="count">{{ ruleCount() }} rules · {{ epicCount() }} epics</span>
         <span class="spacer"></span>
         @if (active()) {
+          <button mat-icon-button class="sm" matTooltip="Snapshots (capture / diff the BR ordering)" (click)="openSnapshots()"><mat-icon>photo_camera</mat-icon></button>
           <button mat-icon-button class="sm" matTooltip="Add Epic" (click)="addEpic()"><mat-icon>create_new_folder</mat-icon></button>
           <button mat-icon-button class="sm" matTooltip="Add Business Rule" (click)="addRule(null)"><mat-icon>add</mat-icon></button>
         }
@@ -264,6 +266,14 @@ export class BrListComponent implements OnInit, OnDestroy {
     if (!id) return;
     const data: AgentInfoDialogData = { rule, connectionId: id };
     this.dialog.open(AgentInfoDialogComponent, { data });
+  }
+
+  // Snapshots: capture the current Epic + BR set and diff it against a saved one.
+  openSnapshots(): void {
+    const conn = this.active();
+    if (!conn) return;
+    const data: SnapshotManagerDialogData = { connectionId: conn.id, connectionName: conn.name };
+    this.dialog.open(SnapshotManagerDialogComponent, { data });
   }
 
   // ── Drag reorder / move across epics ──

@@ -71,3 +71,24 @@ export interface BrAgentInfoInput {
   businessRuleId: string;
   description: string;
 }
+
+// A point-in-time snapshot of the whole Epic + Business Rule set for the active
+// application. The list view carries only metadata; the full snapshot embeds the
+// frozen epics/rules DTO arrays so it can be diffed against the live set. Frozen
+// data — never mutated after capture.
+export interface BrSnapshotMeta {
+  id: string;
+  label: string;
+  epicCount: number;
+  ruleCount: number;
+  createdAt: string;
+}
+
+export interface BrSnapshot extends BrSnapshotMeta {
+  epics: Epic[];
+  rules: AppBusinessRule[];
+}
+
+export interface BrSnapshotInput {
+  label: string;
+}

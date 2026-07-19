@@ -453,6 +453,22 @@ async function ensureAppSchema(pool) {
       created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  // Point-in-time snapshots of the whole Epic + Business Rule set. Each row is a
+  // self-contained copy (the epics/rules DTO arrays frozen as JSON) so it stays
+  // meaningful even after the live rules are reordered, edited or deleted — the
+  // basis for the "diff against current" view. Independent of the live tables
+  // (no FKs), so a snapshot survives deletion of the BRs it captured.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS br_snapshots (
+      id          VARCHAR(36)  NOT NULL PRIMARY KEY,
+      label       VARCHAR(255) NOT NULL,
+      epics       LONGTEXT     NOT NULL,
+      rules       LONGTEXT     NOT NULL,
+      epic_count  INT          NOT NULL DEFAULT 0,
+      rule_count  INT          NOT NULL DEFAULT 0,
+      created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 }
 
 // One-time, idempotent migration of an existing business_rules table to the
@@ -896,6 +912,65 @@ async function listAgentInfoUpToExecutionOrder(id, executionOrder) {
   return all.filter((a) => executionOrderCompare(a.brExecutionOrder, executionOrder) <= 0);
 }
 
+// ── BR snapshots (point-in-time copies of the whole Epic + BR set) ────────────
+// A snapshot freezes the current epics and business rules as JSON so it can be
+// diffed against the live set later. The list view returns only metadata (never
+// the heavy JSON bodies); the detail read parses them back into DTO arrays.
+function snapshotMetaRowToDto(r) {
+  return {
+    id: r.id,
+    label: r.label,
+    epicCount: r.epic_count,
+    ruleCount: r.rule_count,
+    createdAt: r.created_at,
+  };
+}
+
+async function listSnapshots(id) {
+  ensureReady();
+  const pool = await appPool(id);
+  const [rows] = await pool.query(
+    'SELECT id, label, epic_count, rule_count, created_at FROM br_snapshots ORDER BY created_at DESC, id');
+  return rows.map(snapshotMetaRowToDto);
+}
+
+async function getSnapshot(id, snapId) {
+  ensureReady();
+  const pool = await appPool(id);
+  const [rows] = await pool.query('SELECT * FROM br_snapshots WHERE id = ?', [snapId]);
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    ...snapshotMetaRowToDto(r),
+    epics: fromJsonText(r.epics, []),
+    rules: fromJsonText(r.rules, []),
+  };
+}
+
+// Capture the CURRENT epics + business rules as a new snapshot. The label is the
+// only caller-supplied field; everything else is read live from the DB so a
+// snapshot always reflects the true state at capture time.
+async function createSnapshot(id, input) {
+  ensureReady();
+  const pool = await appPool(id);
+  const label = String(input?.label ?? '').trim() || 'Snapshot';
+  const epics = await listEpics(id);
+  const rules = await listBusinessRules(id);
+  const snapId = crypto.randomUUID();
+  await pool.query(
+    'INSERT INTO br_snapshots (id, label, epics, rules, epic_count, rule_count) VALUES (?, ?, ?, ?, ?, ?)',
+    [snapId, label, toJsonText(epics), toJsonText(rules), epics.length, rules.length],
+  );
+  return getSnapshot(id, snapId);
+}
+
+async function deleteSnapshot(id, snapId) {
+  ensureReady();
+  const pool = await appPool(id);
+  const [res] = await pool.query('DELETE FROM br_snapshots WHERE id = ?', [snapId]);
+  return res.affectedRows > 0;
+}
+
 module.exports = {
   init, status,
   listConnections, getConnection, createConnection, updateConnection, deleteConnection,
@@ -906,4 +981,5 @@ module.exports = {
   listNotes, createNote, updateNote, deleteNote,
   listBusinessRules, createBusinessRule, updateBusinessRule, deleteBusinessRule,
   listAgentInfo, createAgentInfo, updateAgentInfo, deleteAgentInfo, listAgentInfoUpToExecutionOrder,
+  listSnapshots, getSnapshot, createSnapshot, deleteSnapshot,
 };

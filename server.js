@@ -266,6 +266,33 @@ app.delete('/api/db/connections/:id/business-rules/:brId', async (req, res) => {
   } catch (err) { sendDbError(res, err); }
 });
 
+// ── BR snapshots (point-in-time copies of the whole Epic + BR set) ────────────
+// A snapshot captures the current epics + business rules so they can be diffed
+// against the live set later. Scoped per connection like epics/business-rules.
+app.get('/api/db/connections/:id/br-snapshots', async (req, res) => {
+  try { res.json({ snapshots: await dbStore.listSnapshots(req.params.id) }); } catch (err) { sendDbError(res, err); }
+});
+
+app.post('/api/db/connections/:id/br-snapshots', async (req, res) => {
+  try { res.status(201).json(await dbStore.createSnapshot(req.params.id, req.body || {})); } catch (err) { sendDbError(res, err); }
+});
+
+app.get('/api/db/connections/:id/br-snapshots/:snapId', async (req, res) => {
+  try {
+    const snapshot = await dbStore.getSnapshot(req.params.id, req.params.snapId);
+    if (!snapshot) return res.status(404).json({ error: 'snapshot not found' });
+    res.json(snapshot);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/db/connections/:id/br-snapshots/:snapId', async (req, res) => {
+  try {
+    const ok = await dbStore.deleteSnapshot(req.params.id, req.params.snapId);
+    if (!ok) return res.status(404).json({ error: 'snapshot not found' });
+    res.json({ ok: true });
+  } catch (err) { sendDbError(res, err); }
+});
+
 // ── Additional agent information (extra agent-facing context per Business Rule) ─
 // `?uptoExecutionOrder=<n>` filters to entries whose referenced BR has been
 // reached by development (referenced BR execution_order <= n) — what the develop
