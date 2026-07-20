@@ -56,7 +56,9 @@ import { NoteFormDialogComponent } from '../../note-form-dialog/note-form-dialog
               @if (n.description) { <div class="nc-desc">{{ n.description }}</div> }
               @if (n.relatedBrs.length) {
                 <div class="nc-brs">
-                  @for (ref of n.relatedBrs; track ref) { <span class="br-chip">{{ ref }}</span> }
+                  @for (ref of n.relatedBrs; track ref) {
+                    <span class="br-chip" matTooltip="Assigned to business rule {{ ref }}"><mat-icon>sell</mat-icon>{{ ref }}</span>
+                  }
                 </div>
               }
             </div>
@@ -84,8 +86,10 @@ import { NoteFormDialogComponent } from '../../note-form-dialog/note-form-dialog
     .del:hover { color: #c62828; }
     .nc-desc { font-size: 12px; color: #444; line-height: 1.4; margin-top: 4px; white-space: pre-wrap; }
     .nc-brs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-    .br-chip { font-size: 10px; font-family: monospace; background: #eef1fb; color: #3f51b5; border: 1px solid #d6ddf5;
+    .br-chip { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-family: monospace;
+               background: #eef1fb; color: #3f51b5; border: 1px solid #d6ddf5;
                padding: 1px 7px; border-radius: 10px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .br-chip mat-icon { font-size: 12px; width: 12px; height: 12px; }
   `],
 })
 export class NotesListComponent implements OnInit, OnDestroy {
@@ -119,7 +123,7 @@ export class NotesListComponent implements OnInit, OnDestroy {
   }
 
   editNote(note: Note): void {
-    this.dialog.open(NoteFormDialogComponent, { data: note }).afterClosed().subscribe((input: NoteInput | undefined) => {
+    this.dialog.open(NoteFormDialogComponent, { data: { note } }).afterClosed().subscribe((input: NoteInput | undefined) => {
       const id = this.connId();
       if (input && id) this.store.dispatch(AppDataActions.updateNote({ connectionId: id, noteId: note.id, input }));
     });
