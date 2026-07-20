@@ -148,6 +148,38 @@ function toWslPath(winPath) {
   return `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, '/')}`;
 }
 
+// Resolve the MAIN repository working tree, even when this server was launched
+// from inside a linked git worktree (e.g. .claude/worktrees/test). A linked
+// worktree's `.git` is a FILE ("gitdir: <root>/.git/worktrees/<name>"), not a
+// directory; feeding that path to `git` inside WSL mangles the Windows gitdir and
+// fails. We parse it in Node instead and always run worktree ops against the real
+// repo root, so it works regardless of which worktree started the server. Cached.
+let mainRepoRootCache;
+async function mainRepoRoot() {
+  if (mainRepoRootCache) return mainRepoRootCache;
+  const dotGit = path.join(__dirname, '.git');
+  let root = __dirname;
+  try {
+    const stat = await fs.stat(dotGit);
+    if (!stat.isDirectory()) {
+      // Linked worktree: `.git` points at <root>/.git/worktrees/<name>.
+      const m = /^gitdir:\s*(.+)$/m.exec(await fs.readFile(dotGit, 'utf8'));
+      if (m) {
+        const gitdir = m[1].trim().replace(/\\/g, '/');   // <root>/.git/worktrees/<name>
+        root = path.dirname(path.dirname(path.dirname(gitdir))); // → <root>
+      }
+    }
+  } catch { /* fall back to __dirname (assume main checkout) */ }
+  mainRepoRootCache = root;
+  return root;
+}
+
+// Local YYYYMMDD stamp, used to name a fresh per-BR worktree/branch per day.
+function yyyymmdd() {
+  const d = new Date();
+  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+}
+
 // Derive a filesystem/tmux-safe slug from a BR name. The result feeds the tmux
 // session (`claude-<slug>`, must match SESSION_RE), branch (`claude/<slug>`) and
 // worktree dir, so keep it to [a-z0-9._-].
@@ -202,15 +234,28 @@ app.post('/api/claude/sessions', async (req, res) => {
 
     const slug = brSlug(brName);
     const session = `claude-${slug}`;
-    const branch = `claude/${slug}`;
     if (!SESSION_RE.test(session)) return res.status(400).json({ error: `invalid session name: ${session}` });
 
     if (!(await claudeAvailable())) {
       return res.status(400).json({ error: 'the `claude` CLI was not found on PATH inside WSL — install it or check your login shell' });
     }
 
-    const repoWsl = toWslPath(__dirname);
-    const worktreeWsl = toWslPath(path.resolve(__dirname, '..', 'ASV-worktrees', slug));
+    // The tmux session name stays deterministic (`claude-<slug>`) so the Claude
+    // Sessions page can join it back to its BR. If a session for this BR is already
+    // live, reuse it rather than spinning up a second worktree for the same rule.
+    if (await tmuxHasSession(session)) {
+      return res.status(200).json({ session, branch: `claude/${slug}`, worktree: null, reused: true });
+    }
+
+    // A fresh, isolated worktree per BR: `<slug>-YYYYMMDD` checked out on its own
+    // branch. Crucially this runs against the MAIN repo root (resolved above), not
+    // `__dirname` — so it works even when the server was launched from inside a
+    // linked worktree, whose `.git` is a file git-in-WSL can't dereference.
+    const worktreeName = `${slug}-${yyyymmdd()}`;
+    const branch = `claude/${worktreeName}`;
+    const root = await mainRepoRoot();
+    const repoWsl = toWslPath(root);
+    const worktreeWsl = toWslPath(path.resolve(root, '..', 'ASV-worktrees', worktreeName));
     await ensureWorktree(repoWsl, worktreeWsl, branch);
 
     // Start a detached tmux session that runs `claude` seeded with the rule. We
@@ -218,11 +263,9 @@ app.post('/api/claude/sessions', async (req, res) => {
     // shell puts claude on PATH, (b) the prompt is passed as a positional arg —
     // never interpolated into a shell string, so arbitrary rule text is safe, and
     // (c) `exec` makes claude the pane's process (clean exit semantics).
-    if (!(await tmuxHasSession(session))) {
-      const prompt = description ? `${rule}\n\n${description}` : rule;
-      await wsl(['tmux', 'new-session', '-d', '-s', session, '-c', worktreeWsl,
-        'bash', '-lc', 'exec claude "$1"', 'claude-seed', prompt]);
-    }
+    const prompt = description ? `${rule}\n\n${description}` : rule;
+    await wsl(['tmux', 'new-session', '-d', '-s', session, '-c', worktreeWsl,
+      'bash', '-lc', 'exec claude "$1"', 'claude-seed', prompt]);
     res.status(201).json({ session, branch, worktree: worktreeWsl });
   } catch (err) {
     res.status(500).json({ error: err.message || String(err) });
