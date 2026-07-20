@@ -10,12 +10,14 @@ import { MatDialog } from '@angular/material/dialog';
 import { Store } from '@ngrx/store';
 import { Subscription } from 'rxjs';
 import { AppBusinessRule, AppBusinessRuleInput, Epic } from '../../../models/app-data.model';
+import { Note, NoteInput } from '../../../models/note.model';
 import { categoryColor } from '../../../models/business-rule.model';
 import { DbConnection } from '../../../models/db-connection.model';
 import { AppDataActions } from '../../../store/app-data/app-data.actions';
-import { selectEpicsWithRules, selectAppDataLoading, selectAppDataError, selectAgentInfoCountByRule } from '../../../store/app-data/app-data.selectors';
+import { selectEpicsWithRules, selectAppDataLoading, selectAppDataError, selectAgentInfoCountByRule, selectNotes } from '../../../store/app-data/app-data.selectors';
 import { selectActiveConnection } from '../../../store/connections/connections.selectors';
 import { BrFormDialogComponent, BrFormData, BrFormResult } from '../../br-form-dialog/br-form-dialog.component';
+import { NoteFormDialogComponent, NoteDialogData } from '../../note-form-dialog/note-form-dialog.component';
 import { EpicFormDialogComponent } from '../../epic-form-dialog/epic-form-dialog.component';
 import { AgentInfoDialogComponent, AgentInfoDialogData } from '../../agent-info-dialog/agent-info-dialog.component';
 import { SnapshotManagerDialogComponent, SnapshotManagerDialogData } from '../../snapshot-manager-dialog/snapshot-manager-dialog.component';
@@ -116,6 +118,10 @@ const UNGROUPED = 'ungrouped';
                         <mat-icon>psychology</mat-icon>
                         <span>Agent info@if (infoCounts()[r.creationIndex]) { ({{ infoCounts()[r.creationIndex] }})}</span>
                       </button>
+                      <button mat-menu-item (click)="editNote(r)">
+                        <mat-icon>{{ noteFor(r) ? 'sticky_note_2' : 'note_add' }}</mat-icon>
+                        <span>{{ noteFor(r) ? 'Edit note' : 'Add note' }}</span>
+                      </button>
                       <button mat-menu-item (click)="editRule(r)"><mat-icon>edit</mat-icon><span>Edit</span></button>
                       <button mat-menu-item (click)="deleteRule(r)"><mat-icon>delete</mat-icon><span>Delete</span></button>
                     </mat-menu>
@@ -185,6 +191,8 @@ export class BrListComponent implements OnInit, OnDestroy {
   error = signal<string | null>(null);
   lists = signal<RuleList[]>([]);
   infoCounts = signal<Record<string, number>>({});
+  // The single note bound to each BR, keyed by BR name (one note per BR).
+  notesByBr = signal<Record<string, Note>>({});
 
   private epics: Epic[] = [];
 
@@ -196,6 +204,12 @@ export class BrListComponent implements OnInit, OnDestroy {
       this.store.select(selectAppDataLoading).subscribe((v) => this.loading.set(v)),
       this.store.select(selectAppDataError).subscribe((v) => this.error.set(v)),
       this.store.select(selectAgentInfoCountByRule).subscribe((c) => this.infoCounts.set(c)),
+      this.store.select(selectNotes).subscribe((notes) => {
+        const byBr: Record<string, Note> = {};
+        // One note per BR: first note referencing a BR name wins.
+        for (const n of notes) for (const ref of n.relatedBrs) byBr[ref] ??= n;
+        this.notesByBr.set(byBr);
+      }),
       this.store.select(selectEpicsWithRules).subscribe(({ grouped, ungrouped }) => {
         this.epics = grouped.map((g) => g.epic);
         const lists: RuleList[] = grouped
@@ -284,6 +298,23 @@ export class BrListComponent implements OnInit, OnDestroy {
     if (!id) return;
     const data: AgentInfoDialogData = { rule, connectionId: id };
     this.dialog.open(AgentInfoDialogComponent, { data });
+  }
+
+  /** The single note bound to this BR, if one exists. */
+  noteFor(rule: AppBusinessRule): Note | undefined { return this.notesByBr()[rule.name]; }
+
+  // Edit (or create) the one note attached to this BR. The note is bound to the
+  // rule by name; the dialog locks that association so there is exactly one note
+  // per BR.
+  editNote(rule: AppBusinessRule): void {
+    const existing = this.noteFor(rule) ?? null;
+    const data: NoteDialogData = { note: existing, lockedBr: rule.name };
+    this.dialog.open(NoteFormDialogComponent, { data }).afterClosed().subscribe((input: NoteInput | undefined) => {
+      const id = this.connId();
+      if (!input || !id) return;
+      if (existing) this.store.dispatch(AppDataActions.updateNote({ connectionId: id, noteId: existing.id, input }));
+      else this.store.dispatch(AppDataActions.createNote({ connectionId: id, input }));
+    });
   }
 
   // Snapshots: capture the current Epic + BR set and diff it against a saved one.
