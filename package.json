@@ -8,6 +8,7 @@
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
     "server": "node server.js",
+    "postinstall": "node scripts/sync-native-binaries.js",
     "dev": "concurrently \"node server.js\" \"ng serve --port 4201\"",
     "dev:remote": "concurrently \"node server.js\" \"ng serve --host 0.0.0.0 --port 4201 --allowed-hosts .ts.net\""
   },
