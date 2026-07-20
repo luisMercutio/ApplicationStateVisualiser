@@ -413,6 +413,7 @@ async function ensureAppSchema(pool) {
       depends_on        LONGTEXT,
       touches           LONGTEXT,
       delta             LONGTEXT,
+      needs_to_be_established TINYINT(1) NOT NULL DEFAULT 0,
       created_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       UNIQUE KEY uq_br_name (name),
@@ -521,6 +522,12 @@ async function migrateBusinessRulesSchema(pool) {
   }
   if (await hasColumn('business_rules', 'seq')) {
     await pool.query('ALTER TABLE business_rules DROP COLUMN seq');
+  }
+
+  // 3) needs_to_be_established. A boolean flag set when a rule is handed to a
+  //    Claude session to be built ("Submit with Claude"); absent on older tables.
+  if (!(await hasColumn('business_rules', 'needs_to_be_established'))) {
+    await pool.query('ALTER TABLE business_rules ADD COLUMN needs_to_be_established TINYINT(1) NOT NULL DEFAULT 0 AFTER delta');
   }
 }
 
@@ -716,6 +723,7 @@ function brRowToDto(r) {
     dependsOn: fromJsonText(r.depends_on, []),
     touches: fromJsonText(r.touches, {}),
     delta: fromJsonText(r.delta, {}),
+    needsToBeEstablished: !!r.needs_to_be_established,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -742,6 +750,7 @@ function normaliseBr(input) {
     dependsOn: strArr(input?.dependsOn),
     touches: input?.touches && typeof input.touches === 'object' ? input.touches : {},
     delta: input?.delta && typeof input.delta === 'object' ? input.delta : {},
+    needsToBeEstablished: input?.needsToBeEstablished === true || input?.needsToBeEstablished === 1,
   };
 }
 
@@ -771,11 +780,11 @@ async function createBusinessRule(id, input) {
   try {
     await pool.query(
       `INSERT INTO business_rules
-         (creation_index, name, epic_id, execution_order, rule, rationale, category, features, modifies_features, depends_on, touches, delta)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (creation_index, name, epic_id, execution_order, rule, rationale, category, features, modifies_features, depends_on, touches, delta, needs_to_be_established)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [brId, b.name, b.epicId, executionOrder, b.rule, b.rationale, b.category,
         toJsonText(b.features), toJsonText(b.modifiesFeatures), toJsonText(b.dependsOn),
-        toJsonText(b.touches), toJsonText(b.delta)],
+        toJsonText(b.touches), toJsonText(b.delta), b.needsToBeEstablished ? 1 : 0],
     );
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') throw badRequest(`A business rule named "${b.name}" already exists`);
@@ -794,11 +803,11 @@ async function updateBusinessRule(id, brId, input) {
     [res] = await pool.query(
       `UPDATE business_rules SET
          name = ?, epic_id = ?, execution_order = ?, rule = ?, rationale = ?, category = ?,
-         features = ?, modifies_features = ?, depends_on = ?, touches = ?, delta = ?
+         features = ?, modifies_features = ?, depends_on = ?, touches = ?, delta = ?, needs_to_be_established = ?
        WHERE creation_index = ?`,
       [b.name, b.epicId, b.executionOrder, b.rule, b.rationale, b.category,
         toJsonText(b.features), toJsonText(b.modifiesFeatures), toJsonText(b.dependsOn),
-        toJsonText(b.touches), toJsonText(b.delta), brId],
+        toJsonText(b.touches), toJsonText(b.delta), b.needsToBeEstablished ? 1 : 0, brId],
     );
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') throw badRequest(`A business rule named "${b.name}" already exists`);

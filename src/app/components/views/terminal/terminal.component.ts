@@ -1,5 +1,5 @@
 import {
-  Component, ElementRef, OnDestroy, AfterViewInit, inject, signal, viewChild,
+  Component, ElementRef, OnDestroy, AfterViewInit, inject, input, signal, viewChild,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { MatIconModule } from '@angular/material/icon';
@@ -67,6 +67,10 @@ export class TerminalComponent implements AfterViewInit, OnDestroy {
   private fileService = inject(FileService);
   private host = viewChild.required<ElementRef<HTMLDivElement>>('host');
 
+  // When set (e.g. by the Claude Sessions page), attach to this session on init
+  // instead of auto-selecting the default tmux session.
+  initialSession = input<string>('');
+
   sessions = signal<string[]>([]);
   session = signal<string>('');
   status = signal<Status>('connecting');
@@ -110,7 +114,15 @@ export class TerminalComponent implements AfterViewInit, OnDestroy {
       }
     });
 
-    this.refreshSessions(/* autoConnect */ true);
+    // Populate the picker either way; only auto-connect to the default when no
+    // explicit session was requested.
+    const initial = this.initialSession();
+    if (initial) {
+      this.refreshSessions(/* autoConnect */ false);
+      this.connect(initial);
+    } else {
+      this.refreshSessions(/* autoConnect */ true);
+    }
   }
 
   ngOnDestroy(): void {

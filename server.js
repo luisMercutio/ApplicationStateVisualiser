@@ -4,6 +4,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const http = require('http');
 const { execFile } = require('child_process');
+const { promisify } = require('util');
 const { WebSocketServer } = require('ws');
 const pty = require('node-pty');
 const dbStore = require('./db-store');
@@ -121,6 +122,128 @@ app.get('/api/tmux/sessions', (_req, res) => {
             .map(l => l.split(':')[0].trim())
             .filter(Boolean);
       res.json({ sessions, default: DEFAULT_TMUX_SESSION, distro: WSL_DISTRO });
+    },
+  );
+});
+
+// ── Claude sessions: per-BR git worktree + tmux `claude` session ───────────────
+// "Submit with Claude" from the BR dialog hands a rule to a fresh `claude` CLI
+// running in its OWN git worktree, so the work is isolated per BR. tmux, git and
+// claude all live inside WSL; the Windows repo path is translated with `wslpath`.
+const execFileP = promisify(execFile);
+
+// Run a program (no shell) inside WSL and resolve with { stdout, stderr }.
+function wsl(args, opts = {}) {
+  return execFileP('wsl.exe', ['-d', WSL_DISTRO, '--', ...args], { timeout: 20000, windowsHide: true, ...opts });
+}
+
+// Translate a Windows path to its WSL /mnt/… form. We do this in Node rather than
+// shelling out to `wslpath`, because passing a backslashed C:\… path through
+// wsl.exe's argument marshalling eats the backslashes. Paths here are always local
+// drive paths, so the mapping is deterministic.
+function toWslPath(winPath) {
+  const abs = path.resolve(winPath);
+  const m = /^([A-Za-z]):[\\/]?(.*)$/.exec(abs);
+  if (!m) return abs.replace(/\\/g, '/');
+  return `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, '/')}`;
+}
+
+// Derive a filesystem/tmux-safe slug from a BR name. The result feeds the tmux
+// session (`claude-<slug>`, must match SESSION_RE), branch (`claude/<slug>`) and
+// worktree dir, so keep it to [a-z0-9._-].
+function brSlug(name) {
+  const slug = String(name || '').trim().toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^[-._]+|[-._]+$/g, '')
+    .slice(0, 60)
+    .replace(/[-._]+$/g, '');
+  if (!slug) throw new Error('cannot derive a slug from the BR name');
+  return slug;
+}
+
+// Is `claude` reachable from a WSL login shell? (It's typically installed via
+// nvm/npm-global, only on PATH once the login profile has run.)
+async function claudeAvailable() {
+  try { await wsl(['bash', '-lc', 'command -v claude']); return true; } catch { return false; }
+}
+
+async function tmuxHasSession(session) {
+  // `=name` forces an exact match so `claude-foo` can't match `claude-foobar`.
+  try { await wsl(['tmux', 'has-session', '-t', `=${session}`]); return true; } catch { return false; }
+}
+
+// Create the worktree + branch for a BR, idempotently: reuse the worktree if it
+// (or the branch) already exists, so re-submitting the same BR never 500s.
+async function ensureWorktree(repoWsl, worktreeWsl, branch) {
+  const listed = await wsl(['git', '-C', repoWsl, 'worktree', 'list', '--porcelain']).catch(() => ({ stdout: '' }));
+  if (listed.stdout.split(/\r?\n/).some(l => l.trim() === `worktree ${worktreeWsl}`)) return;
+  const attempts = [
+    ['git', '-C', repoWsl, 'worktree', 'add', '-b', branch, worktreeWsl], // fresh branch
+    ['git', '-C', repoWsl, 'worktree', 'add', worktreeWsl, branch],       // branch already exists
+  ];
+  let lastErr;
+  for (const a of attempts) {
+    try { await wsl(a); return; } catch (e) {
+      lastErr = e;
+      if (/already (exists|used|checked out)/i.test(`${e.stderr || ''}${e.message || ''}`)) return;
+    }
+  }
+  throw new Error(`git worktree add failed: ${(lastErr.stderr || lastErr.message || '').trim()}`);
+}
+
+// Spawn (or reuse) a Claude session for a Business Rule.
+app.post('/api/claude/sessions', async (req, res) => {
+  try {
+    const brName = String(req.body?.brName || '').trim();
+    const rule = String(req.body?.rule || '').trim();
+    const description = req.body?.description == null ? '' : String(req.body.description).trim();
+    if (!brName) return res.status(400).json({ error: 'brName is required' });
+    if (!rule) return res.status(400).json({ error: 'rule is required' });
+
+    const slug = brSlug(brName);
+    const session = `claude-${slug}`;
+    const branch = `claude/${slug}`;
+    if (!SESSION_RE.test(session)) return res.status(400).json({ error: `invalid session name: ${session}` });
+
+    if (!(await claudeAvailable())) {
+      return res.status(400).json({ error: 'the `claude` CLI was not found on PATH inside WSL — install it or check your login shell' });
+    }
+
+    const repoWsl = toWslPath(__dirname);
+    const worktreeWsl = toWslPath(path.resolve(__dirname, '..', 'ASV-worktrees', slug));
+    await ensureWorktree(repoWsl, worktreeWsl, branch);
+
+    // Start a detached tmux session that runs `claude` seeded with the rule. We
+    // launch through `bash -lc 'exec claude "$1"' _ <prompt>` so: (a) the login
+    // shell puts claude on PATH, (b) the prompt is passed as a positional arg —
+    // never interpolated into a shell string, so arbitrary rule text is safe, and
+    // (c) `exec` makes claude the pane's process (clean exit semantics).
+    if (!(await tmuxHasSession(session))) {
+      const prompt = description ? `${rule}\n\n${description}` : rule;
+      await wsl(['tmux', 'new-session', '-d', '-s', session, '-c', worktreeWsl,
+        'bash', '-lc', 'exec claude "$1"', 'claude-seed', prompt]);
+    }
+    res.status(201).json({ session, branch, worktree: worktreeWsl });
+  } catch (err) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// List the live Claude sessions (tmux sessions named `claude-*`). Liveness is
+// derived from tmux, not stored — so it survives a server restart. The BR/branch/
+// worktree join happens client-side from each rule's delta.claudeSession.
+app.get('/api/claude/sessions', (_req, res) => {
+  execFile(
+    'wsl.exe',
+    ['-d', WSL_DISTRO, '--', 'tmux', 'ls'],
+    { timeout: 5000, windowsHide: true },
+    (err, stdout) => {
+      const names = err
+        ? []
+        : (stdout || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+            .map(l => l.split(':')[0].trim()).filter(Boolean);
+      const sessions = names.filter(n => n.startsWith('claude-')).map(name => ({ name, running: true }));
+      res.json({ sessions });
     },
   );
 });

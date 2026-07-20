@@ -35,6 +35,7 @@ export interface AppBusinessRule {
   dependsOn: string[];
   touches: Record<string, string[]>;
   delta: Record<string, unknown>;
+  needsToBeEstablished: boolean; // handed to a Claude session, still to be built
   createdAt: string;
   updatedAt: string;
 }
@@ -51,6 +52,18 @@ export interface AppBusinessRuleInput {
   dependsOn?: string[];
   touches?: Record<string, string[]>;
   delta?: Record<string, unknown>;
+  needsToBeEstablished?: boolean;
+}
+
+// A live Claude session spawned by "Submit with Claude": a tmux session running
+// the claude CLI in a per-BR git worktree. `running` is derived from tmux; the
+// BR/branch/worktree join is filled in client-side from the rule's delta.
+export interface ClaudeSession {
+  name: string;              // tmux session name, e.g. claude-br-042
+  running: boolean;
+  brName?: string;
+  branch?: string;
+  worktree?: string;
 }
 
 // Extra, agent-facing context attached to one Business Rule. During development
