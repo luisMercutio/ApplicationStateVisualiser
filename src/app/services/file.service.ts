@@ -3,6 +3,7 @@ import { HttpClient } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
 import { Panel } from '../models/panel.model';
+import { ClaudeSession } from '../models/app-data.model';
 
 // Derive the API host from the page's own host so the app works both on
 // localhost and when reached over the network (e.g. a phone on Tailscale
@@ -37,6 +38,21 @@ export class FileService {
     const host = typeof window !== 'undefined' && window.location?.hostname ? window.location.hostname : 'localhost';
     const params = new URLSearchParams({ session, cols: String(cols), rows: String(rows) });
     return `${proto}://${host}:${API_PORT}/api/terminal?${params.toString()}`;
+  }
+
+  // ── Claude sessions (per-BR git worktree + tmux claude session) ──
+  // Hand a Business Rule to a fresh claude CLI running in its own worktree.
+  submitToClaude(body: { brName: string; rule: string; description: string | null }):
+    Observable<{ session: string; branch: string; worktree: string }> {
+    return this.http.post<{ session: string; branch: string; worktree: string }>(
+      `${API_BASE}/api/claude/sessions`, body);
+  }
+
+  // The live claude-* tmux sessions (running state derived from tmux server-side).
+  getClaudeSessions(): Observable<ClaudeSession[]> {
+    return this.http.get<{ sessions: ClaudeSession[] }>(
+      `${API_BASE}/api/claude/sessions`, { headers: { 'Cache-Control': 'no-cache' } })
+      .pipe(map(r => r.sessions));
   }
 
   // ── Saved panel layouts ──

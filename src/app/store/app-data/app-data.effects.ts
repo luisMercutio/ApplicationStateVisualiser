@@ -8,12 +8,14 @@ import { AppDataActions } from './app-data.actions';
 import { ConnectionsActions } from '../connections/connections.actions';
 import { selectActiveId } from '../connections/connections.selectors';
 import { DbService } from '../../services/db.service';
+import { FileService } from '../../services/file.service';
 
 @Injectable()
 export class AppDataEffects {
   private actions$ = inject(Actions);
   private store = inject(Store);
   private db = inject(DbService);
+  private file = inject(FileService);
   private snackBar = inject(MatSnackBar);
 
   // When the active connection changes, (re)load its epics + business rules.
@@ -112,6 +114,43 @@ export class AppDataEffects {
         ),
       ),
     ),
+  );
+
+  // "Submit with Claude": save the rule (create when adding, update when editing)
+  // with needsToBeEstablished=true, then hand it to a fresh claude session. The
+  // saved rule is pushed to the store via the ordinary rule-success actions so the
+  // list stays in sync even if the claude spawn fails; the spawn result only drives
+  // the snackbar notice.
+  submitToClaude$ = createEffect(() =>
+    this.actions$.pipe(
+      ofType(AppDataActions.submitToClaude),
+      mergeMap(({ connectionId, ruleId, input }) => {
+        const withFlag = { ...input, needsToBeEstablished: true };
+        const save$ = ruleId
+          ? this.db.updateBusinessRule(connectionId, ruleId, withFlag).pipe(map(rule => ({ rule, existing: true })))
+          : this.db.createBusinessRule(connectionId, withFlag).pipe(map(rule => ({ rule, existing: false })));
+        return save$.pipe(
+          switchMap(({ rule, existing }) => {
+            const saved = existing
+              ? AppDataActions.updateRuleSuccess({ rule })
+              : AppDataActions.createRuleSuccess({ rule });
+            return this.file.submitToClaude({ brName: rule.name, rule: rule.rule, description: rule.rationale }).pipe(
+              mergeMap(({ session }) => of(saved, AppDataActions.submitToClaudeSuccess({ rule, session }))),
+              // The rule is already saved; surface the spawn failure but keep the store synced.
+              catchError((err) => of(saved, AppDataActions.mutationFailure({ error: errMsg(err) }))),
+            );
+          }),
+          catchError((err) => of(AppDataActions.mutationFailure({ error: errMsg(err) }))),
+        );
+      }),
+    ),
+  );
+
+  claudeStarted$ = createEffect(() =>
+    this.actions$.pipe(
+      ofType(AppDataActions.submitToClaudeSuccess),
+      tap(({ session }) => this.snackBar.open(`Claude session started: ${session}`, 'Dismiss', { duration: 4500 })),
+    ), { dispatch: false },
   );
 
   // Spawn a new epic and move the dragged rule into it, in one flow.

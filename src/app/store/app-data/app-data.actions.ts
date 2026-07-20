@@ -27,6 +27,13 @@ export const AppDataActions = createActionGroup({
     'Delete Rule': props<{ connectionId: string; ruleId: string }>(),
     'Delete Rule Success': props<{ ruleId: string }>(),
 
+    // "Submit with Claude": persist the rule with needsToBeEstablished=true, then
+    // spawn a claude session for it. ruleId is null when adding, set when editing.
+    // The store is synced via the ordinary create/update-rule success actions; this
+    // success action only carries the spawned session for the snackbar notice.
+    'Submit To Claude': props<{ connectionId: string; ruleId: string | null; input: AppBusinessRuleInput }>(),
+    'Submit To Claude Success': props<{ rule: AppBusinessRule; session: string }>(),
+
     // Dragging a rule out of its epic spawns a fresh epic that adopts it: the
     // effect creates the epic, then reassigns the rule to it.
     'Move Rule To New Epic': props<{ connectionId: string; ruleId: string; input: AppBusinessRuleInput; epicTitle: string }>(),

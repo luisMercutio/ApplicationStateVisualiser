@@ -15,7 +15,7 @@ import { DbConnection } from '../../../models/db-connection.model';
 import { AppDataActions } from '../../../store/app-data/app-data.actions';
 import { selectEpicsWithRules, selectAppDataLoading, selectAppDataError, selectAgentInfoCountByRule } from '../../../store/app-data/app-data.selectors';
 import { selectActiveConnection } from '../../../store/connections/connections.selectors';
-import { BrFormDialogComponent, BrFormData } from '../../br-form-dialog/br-form-dialog.component';
+import { BrFormDialogComponent, BrFormData, BrFormResult } from '../../br-form-dialog/br-form-dialog.component';
 import { EpicFormDialogComponent } from '../../epic-form-dialog/epic-form-dialog.component';
 import { AgentInfoDialogComponent, AgentInfoDialogData } from '../../agent-info-dialog/agent-info-dialog.component';
 
@@ -96,6 +96,11 @@ const UNGROUPED = 'ungrouped';
                       <div class="r-meta">
                         <span class="r-name">{{ r.name }}</span>
                         @if (r.category) { <span class="r-cat" [style.background]="color(r)">{{ r.category }}</span> }
+                        @if (r.needsToBeEstablished) {
+                          <span class="r-establish" matTooltip="Handed to Claude — still to be established">
+                            <mat-icon>smart_toy</mat-icon> needs establishing
+                          </span>
+                        }
                         @if (r.features.length) { <span class="r-feat">{{ r.features[0] }}</span> }
                       </div>
                     </div>
@@ -160,6 +165,9 @@ const UNGROUPED = 'ungrouped';
     .r-name { font-family: monospace; font-size: 10px; color: #888; }
     .r-feat { font-size: 10px; color: #999; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .r-cat { color: white; font-size: 9px; padding: 1px 7px; border-radius: 10px; text-transform: capitalize; flex-shrink: 0; }
+    .r-establish { display: inline-flex; align-items: center; gap: 2px; color: white; background: #8e24aa;
+                   font-size: 9px; padding: 1px 7px; border-radius: 10px; flex-shrink: 0; }
+    .r-establish mat-icon { font-size: 11px; width: 11px; height: 11px; }
     .cdk-drag-preview { box-shadow: 0 5px 16px rgba(0,0,0,0.28); border-radius: 6px; }
     .cdk-drag-placeholder { opacity: 0.35; }
     .cdk-drag-animating, .brl-list.cdk-drop-list-dragging .brl-row:not(.cdk-drag-placeholder) { transition: transform 180ms cubic-bezier(0,0,0.2,1); }
@@ -238,17 +246,27 @@ export class BrListComponent implements OnInit, OnDestroy {
   // ── Business Rule CRUD ──
   addRule(defaultEpicId: string | null): void {
     const data: BrFormData = { epics: this.epics, defaultEpicId };
-    this.dialog.open(BrFormDialogComponent, { data }).afterClosed().subscribe((input: AppBusinessRuleInput | undefined) => {
+    this.dialog.open(BrFormDialogComponent, { data }).afterClosed().subscribe((res: BrFormResult | undefined) => {
       const id = this.connId();
-      if (input && id) this.store.dispatch(AppDataActions.createRule({ connectionId: id, input }));
+      if (!res || !id) return;
+      if (res.submitToClaude) {
+        this.store.dispatch(AppDataActions.submitToClaude({ connectionId: id, ruleId: null, input: res.input }));
+      } else {
+        this.store.dispatch(AppDataActions.createRule({ connectionId: id, input: res.input }));
+      }
     });
   }
 
   editRule(rule: AppBusinessRule): void {
     const data: BrFormData = { rule, epics: this.epics };
-    this.dialog.open(BrFormDialogComponent, { data }).afterClosed().subscribe((input: AppBusinessRuleInput | undefined) => {
+    this.dialog.open(BrFormDialogComponent, { data }).afterClosed().subscribe((res: BrFormResult | undefined) => {
       const id = this.connId();
-      if (input && id) this.store.dispatch(AppDataActions.updateRule({ connectionId: id, ruleId: rule.creationIndex, input }));
+      if (!res || !id) return;
+      if (res.submitToClaude) {
+        this.store.dispatch(AppDataActions.submitToClaude({ connectionId: id, ruleId: rule.creationIndex, input: res.input }));
+      } else {
+        this.store.dispatch(AppDataActions.updateRule({ connectionId: id, ruleId: rule.creationIndex, input: res.input }));
+      }
     });
   }
 

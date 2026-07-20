@@ -14,6 +14,7 @@ import { BrListComponent } from './components/views/br-list/br-list.component';
 import { NotesListComponent } from './components/views/notes-list/notes-list.component';
 import { ActivityFeedComponent } from './components/views/activity-feed/activity-feed.component';
 import { TerminalComponent } from './components/views/terminal/terminal.component';
+import { ClaudeSessionsComponent } from './components/views/claude-sessions/claude-sessions.component';
 import { MethodologyEditorComponent } from './components/views/methodology-editor/methodology-editor.component';
 import { Panel, ViewType } from './models/panel.model';
 import { AppPage } from './models/app-page.model';
@@ -28,7 +29,7 @@ function newId(): string {
   imports: [
     MatDialogModule, ToolbarComponent, PanelGridComponent,
     BrListComponent, NotesListComponent, ActivityFeedComponent,
-    TerminalComponent, MethodologyEditorComponent,
+    TerminalComponent, ClaudeSessionsComponent, MethodologyEditorComponent,
   ],
   template: `
     <div class="app-shell">
@@ -40,6 +41,7 @@ function newId(): string {
           @case ('activity') { <app-activity-feed></app-activity-feed> }
           @case ('features') { <app-panel-grid></app-panel-grid> }
           @case ('terminal') { <app-terminal></app-terminal> }
+          @case ('claude-sessions') { <app-claude-sessions></app-claude-sessions> }
           @case ('settings') { <app-methodology-editor></app-methodology-editor> }
         }
       </div>
