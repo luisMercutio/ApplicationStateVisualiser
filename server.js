@@ -229,23 +229,209 @@ app.post('/api/claude/sessions', async (req, res) => {
   }
 });
 
-// List the live Claude sessions (tmux sessions named `claude-*`). Liveness is
-// derived from tmux, not stored — so it survives a server restart. The BR/branch/
-// worktree join happens client-side from each rule's delta.claudeSession.
-app.get('/api/claude/sessions', (_req, res) => {
-  execFile(
-    'wsl.exe',
-    ['-d', WSL_DISTRO, '--', 'tmux', 'ls'],
-    { timeout: 5000, windowsHide: true },
-    (err, stdout) => {
-      const names = err
-        ? []
-        : (stdout || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean)
-            .map(l => l.split(':')[0].trim()).filter(Boolean);
-      const sessions = names.filter(n => n.startsWith('claude-')).map(name => ({ name, running: true }));
-      res.json({ sessions });
-    },
-  );
+// ── Claude session archive (conversation transcripts) ──────────────────────────
+// The Stop/SessionEnd hook (.claude/hooks/sync-transcript.sh) mirrors each session's
+// transcript here as `<slug>__<sessionUuid>.jsonl`, where <slug> is the worktree
+// basename (= brSlug). One central store on the Windows fs, readable directly.
+function conversationsDir() {
+  return path.resolve(__dirname, '.claude', 'conversations');
+}
+// The main repo's own sessions land here too (prefixed with the repo basename);
+// they aren't per-BR sessions, so the Claude Sessions page ignores this prefix.
+const MAIN_PREFIX = path.basename(__dirname);
+
+// Map a WSL cwd to Claude Code's per-project transcript dir name: every
+// non-alphanumeric char becomes '-' (verified against ~/.claude/projects/*).
+function claudeProjectSlug(wslPath) {
+  return wslPath.replace(/[^A-Za-z0-9]/g, '-');
+}
+
+// Archived transcripts grouped by slug → [{ file, uuid, mtimeMs }], newest usable
+// via a sort. Missing dir → empty map (no sessions have finished a turn yet).
+async function listArchives() {
+  const dir = conversationsDir();
+  let files;
+  try { files = await fs.readdir(dir); } catch { return new Map(); }
+  const bySlug = new Map();
+  for (const f of files) {
+    if (!f.endsWith('.jsonl')) continue;
+    const sep = f.indexOf('__');
+    if (sep <= 0) continue;
+    const slug = f.slice(0, sep);
+    const uuid = f.slice(sep + 2, -('.jsonl'.length));
+    let mtimeMs = 0;
+    try { mtimeMs = (await fs.stat(path.join(dir, f))).mtimeMs; } catch { /* ignore */ }
+    const arr = bySlug.get(slug) || [];
+    arr.push({ file: f, uuid, mtimeMs });
+    bySlug.set(slug, arr);
+  }
+  return bySlug;
+}
+
+// Slugs of the per-BR worktrees that currently exist on disk (../ASV-worktrees/*).
+async function worktreeSlugs() {
+  const base = path.resolve(__dirname, '..', 'ASV-worktrees');
+  try {
+    const entries = await fs.readdir(base, { withFileTypes: true });
+    return entries.filter(e => e.isDirectory()).map(e => e.name);
+  } catch { return []; }
+}
+
+// Live claude-* tmux session names (empty when no tmux server is running).
+function liveClaudeSessions() {
+  return new Promise(resolve => {
+    execFile('wsl.exe', ['-d', WSL_DISTRO, '--', 'tmux', 'ls'],
+      { timeout: 5000, windowsHide: true }, (err, stdout) => {
+        const names = err ? [] : (stdout || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+          .map(l => l.split(':')[0].trim()).filter(Boolean);
+        resolve(names.filter(n => n.startsWith('claude-')));
+      });
+  });
+}
+
+// List Claude sessions: running (live in tmux) AND dead (a worktree or an archived
+// transcript exists, but no live tmux session). Liveness is derived from tmux, not
+// stored, so it survives a server restart. The BR/branch join happens client-side.
+app.get('/api/claude/sessions', async (_req, res) => {
+  try {
+    const [live, wts, archives] = await Promise.all([liveClaudeSessions(), worktreeSlugs(), listArchives()]);
+    const bySession = new Map();
+    const add = (name, running, hasTranscript) => {
+      const cur = bySession.get(name);
+      if (cur) { cur.running = cur.running || running; cur.hasTranscript = cur.hasTranscript || hasTranscript; }
+      else bySession.set(name, { name, running, hasTranscript });
+    };
+    for (const name of live) add(name, true, false);
+    for (const slug of wts) add(`claude-${slug}`, false, false);
+    for (const slug of archives.keys()) {
+      if (slug === MAIN_PREFIX) continue; // the main repo's own sessions aren't BR sessions
+      add(`claude-${slug}`, false, true);
+    }
+    // Live sessions may also have an archive from an earlier Stop.
+    for (const [name, s] of bySession) {
+      const slug = name.slice('claude-'.length);
+      if (archives.has(slug)) s.hasTranscript = true;
+    }
+    res.json({ sessions: [...bySession.values()] });
+  } catch (err) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// Reduce a Claude Code transcript JSONL to the prompt/answer thread: user text and
+// assistant text only — no thinking, tool_use or tool_result blocks.
+function textFromContent(content) {
+  if (typeof content === 'string') return content.trim();
+  if (Array.isArray(content)) {
+    return content.filter(b => b && b.type === 'text' && typeof b.text === 'string')
+      .map(b => b.text).join('\n').trim();
+  }
+  return '';
+}
+
+function parseTranscript(raw) {
+  const out = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const s = line.trim();
+    if (!s) continue;
+    let obj;
+    try { obj = JSON.parse(s); } catch { continue; }
+    if (obj.isMeta || !obj.message) continue;
+    if (obj.type === 'user') {
+      // Skip tool_result echoes (user-role messages that only carry tool output).
+      if (Array.isArray(obj.message.content) && obj.message.content.every(b => b && b.type === 'tool_result')) continue;
+      const text = textFromContent(obj.message.content);
+      if (text) out.push({ role: 'user', text, at: obj.timestamp || null });
+    } else if (obj.type === 'assistant') {
+      const text = textFromContent(obj.message.content);
+      if (text) out.push({ role: 'assistant', text, at: obj.timestamp || null });
+    }
+  }
+  return out;
+}
+
+// The archived conversation for a session (most recent transcript), prompt/answer only.
+app.get('/api/claude/sessions/:session/conversation', async (req, res) => {
+  try {
+    const session = String(req.params.session || '');
+    if (!SESSION_RE.test(session) || !session.startsWith('claude-')) {
+      return res.status(400).json({ error: `invalid session name: ${session}` });
+    }
+    const slug = session.slice('claude-'.length);
+    const list = (await listArchives()).get(slug);
+    if (!list || !list.length) return res.status(404).json({ error: 'no transcript has been archived for this session yet' });
+    list.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const chosen = list[0];
+    const raw = await fs.readFile(path.join(conversationsDir(), chosen.file), 'utf-8');
+    res.json({ session, sessionId: chosen.uuid, file: chosen.file, messages: parseTranscript(raw) });
+  } catch (err) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// Reopen a dead session. Claude replays its OWN per-project transcript store
+// (~/.claude/projects/<slug>/ inside WSL), so we: (1) resume when that store is
+// intact; (2) rehydrate it from our central archive — byte-for-byte the same
+// files — then resume when it was pruned; (3) start fresh (seeded with the rule
+// when the client supplies it) when there's nothing to replay.
+app.post('/api/claude/sessions/:session/reopen', async (req, res) => {
+  try {
+    const session = String(req.params.session || '');
+    if (!SESSION_RE.test(session) || !session.startsWith('claude-')) {
+      return res.status(400).json({ error: `invalid session name: ${session}` });
+    }
+    const slug = session.slice('claude-'.length);
+    const branch = `claude/${slug}`;
+    const rule = req.body?.rule == null ? '' : String(req.body.rule).trim();
+    const description = req.body?.description == null ? '' : String(req.body.description).trim();
+
+    if (!(await claudeAvailable())) {
+      return res.status(400).json({ error: 'the `claude` CLI was not found on PATH inside WSL — install it or check your login shell' });
+    }
+    if (await tmuxHasSession(session)) return res.json({ session, branch, mode: 'already-running' });
+
+    const repoWsl = toWslPath(__dirname);
+    const worktreeWsl = toWslPath(path.resolve(__dirname, '..', 'ASV-worktrees', slug));
+    await ensureWorktree(repoWsl, worktreeWsl, branch);
+
+    // Is Claude's native transcript store for this worktree still present?
+    const nativeDir = `$HOME/.claude/projects/${claudeProjectSlug(worktreeWsl)}`;
+    let canResume = false;
+    try { await wsl(['bash', '-lc', `ls ${nativeDir}/*.jsonl >/dev/null 2>&1`]); canResume = true; } catch { canResume = false; }
+
+    let mode;
+    if (canResume) {
+      mode = 'resumed';
+    } else {
+      const list = (await listArchives()).get(slug);
+      if (list && list.length) {
+        list.sort((a, b) => b.mtimeMs - a.mtimeMs);
+        const chosen = list[0];
+        const srcWsl = toWslPath(path.join(conversationsDir(), chosen.file));
+        // Restore the native transcript from the archive, then --continue can replay it.
+        await wsl(['bash', '-lc', `mkdir -p "${nativeDir}" && cp "$1" "${nativeDir}/$2"`,
+          'rehydrate', srcWsl, `${chosen.uuid}.jsonl`]);
+        mode = 'rehydrated';
+      } else {
+        mode = rule ? 'fresh-seeded' : 'fresh';
+      }
+    }
+
+    if (mode === 'resumed' || mode === 'rehydrated') {
+      await wsl(['tmux', 'new-session', '-d', '-s', session, '-c', worktreeWsl,
+        'bash', '-lc', 'exec claude --continue']);
+    } else if (mode === 'fresh-seeded') {
+      const prompt = description ? `${rule}\n\n${description}` : rule;
+      await wsl(['tmux', 'new-session', '-d', '-s', session, '-c', worktreeWsl,
+        'bash', '-lc', 'exec claude "$1"', 'claude-seed', prompt]);
+    } else {
+      await wsl(['tmux', 'new-session', '-d', '-s', session, '-c', worktreeWsl,
+        'bash', '-lc', 'exec claude']);
+    }
+    res.status(201).json({ session, branch, worktree: worktreeWsl, mode });
+  } catch (err) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
 });
 
 // ── Database connections (Store A + target B…Z registry) ──────────────────────

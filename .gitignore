@@ -44,3 +44,6 @@ dev-remote.log
 
 # Database A encryption key — never commit; losing it makes stored credentials undecryptable
 .db-secret.key
+
+# Synced Claude Code conversation transcripts (mirrored by .claude/hooks/sync-transcript.sh)
+.claude/conversations/

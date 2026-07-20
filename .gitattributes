@@ -1,0 +1,4 @@
+# Shell scripts run inside WSL — force LF so a CRLF checkout on Windows can't break
+# them (bash chokes on the trailing \r). Covers the Claude session hooks.
+*.sh text eol=lf
+.claude/hooks/** text eol=lf

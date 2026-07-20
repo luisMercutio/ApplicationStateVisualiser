@@ -64,6 +64,15 @@ export interface ClaudeSession {
   brName?: string;
   branch?: string;
   worktree?: string;
+  hasTranscript?: boolean;   // an archived transcript exists → conversation is viewable
+}
+
+// One turn of a Claude conversation, reduced to prompt/answer only (thinking and
+// tool calls stripped) by the server from the archived transcript JSONL.
+export interface ConversationMessage {
+  role: 'user' | 'assistant';
+  text: string;
+  at: string | null;        // ISO timestamp, when the transcript carried one
 }
 
 // Extra, agent-facing context attached to one Business Rule. During development
