@@ -9,6 +9,7 @@ import { ConnectionsActions } from '../connections/connections.actions';
 import { selectActiveId } from '../connections/connections.selectors';
 import { DbService } from '../../services/db.service';
 import { FileService } from '../../services/file.service';
+import { AppBusinessRule } from '../../models/app-data.model';
 
 @Injectable()
 export class AppDataEffects {
@@ -134,7 +135,7 @@ export class AppDataEffects {
             const saved = existing
               ? AppDataActions.updateRuleSuccess({ rule })
               : AppDataActions.createRuleSuccess({ rule });
-            return this.file.submitToClaude({ brName: rule.name, rule: rule.rule, description: rule.rationale }).pipe(
+            return this.file.submitToClaude({ brName: rule.name, rule: rule.rule, description: brContext(rule) }).pipe(
               mergeMap(({ session }) => of(saved, AppDataActions.submitToClaudeSuccess({ rule, session }))),
               // The rule is already saved; surface the spawn failure but keep the store synced.
               catchError((err) => of(saved, AppDataActions.mutationFailure({ error: errMsg(err) }))),
@@ -253,4 +254,24 @@ export class AppDataEffects {
 function errMsg(err: unknown): string {
   const e = err as { error?: { error?: string }; message?: string };
   return e?.error?.error ?? e?.message ?? 'Request failed';
+}
+
+/**
+ * Compose the seed context handed to a Claude session for a Business Rule. The
+ * server prepends the rule statement, so this returns everything ELSE that gives
+ * Claude the BR's context — rationale, category, features, dependencies and the
+ * file anchors it touches. Returns null when the rule carries no extra context.
+ */
+function brContext(rule: AppBusinessRule): string | null {
+  const parts: string[] = [];
+  if (rule.rationale) parts.push(`Rationale: ${rule.rationale}`);
+  if (rule.category) parts.push(`Category: ${rule.category}`);
+  if (rule.features?.length) parts.push(`Features: ${rule.features.join(', ')}`);
+  if (rule.modifiesFeatures?.length) parts.push(`Modifies features: ${rule.modifiesFeatures.join(', ')}`);
+  if (rule.dependsOn?.length) parts.push(`Depends on: ${rule.dependsOn.join(', ')}`);
+  const touches = Object.entries(rule.touches ?? {}).filter(([, v]) => Array.isArray(v) && v.length);
+  if (touches.length) {
+    parts.push('Touches:\n' + touches.map(([k, v]) => `  ${k}: ${v.join(', ')}`).join('\n'));
+  }
+  return parts.length ? parts.join('\n') : null;
 }

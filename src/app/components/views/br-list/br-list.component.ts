@@ -122,6 +122,10 @@ const UNGROUPED = 'ungrouped';
                         <mat-icon>{{ noteFor(r) ? 'sticky_note_2' : 'note_add' }}</mat-icon>
                         <span>{{ noteFor(r) ? 'Edit note' : 'Add note' }}</span>
                       </button>
+                      <button mat-menu-item (click)="openClaudeSession(r)">
+                        <mat-icon>smart_toy</mat-icon>
+                        <span>Open Claude session</span>
+                      </button>
                       <button mat-menu-item (click)="editRule(r)"><mat-icon>edit</mat-icon><span>Edit</span></button>
                       <button mat-menu-item (click)="deleteRule(r)"><mat-icon>delete</mat-icon><span>Delete</span></button>
                     </mat-menu>
@@ -298,6 +302,18 @@ export class BrListComponent implements OnInit, OnDestroy {
     if (!id) return;
     const data: AgentInfoDialogData = { rule, connectionId: id };
     this.dialog.open(AgentInfoDialogComponent, { data });
+  }
+
+  // Hand this BR straight to a fresh Claude session (its own worktree + tmux)
+  // seeded with the rule's full context — no edit dialog. Reuses the same
+  // submit-to-Claude flow as the BR form's "Submit with Claude" button, so the
+  // spawned session then surfaces on the Claude Sessions page.
+  openClaudeSession(rule: AppBusinessRule): void {
+    const id = this.connId();
+    if (!id) return;
+    this.store.dispatch(AppDataActions.submitToClaude({
+      connectionId: id, ruleId: rule.creationIndex, input: ruleToInput(rule, {}),
+    }));
   }
 
   /** The single note bound to this BR, if one exists. */
