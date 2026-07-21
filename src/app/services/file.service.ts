@@ -1,9 +1,10 @@
 import { Injectable, inject } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
 import { Panel } from '../models/panel.model';
 import { ClaudeSession, ConversationMessage } from '../models/app-data.model';
+import { GitCommit, GitWorktree } from '../models/git.model';
 
 // Derive the API host from the page's own host so the app works both on
 // localhost and when reached over the network (e.g. a phone on Tailscale
@@ -72,6 +73,22 @@ export class FileService {
     return this.http.get<{ session: string; sessionId: string; messages: ConversationMessage[] }>(
       `${API_BASE}/api/claude/sessions/${encodeURIComponent(session)}/conversation`,
       { headers: { 'Cache-Control': 'no-cache' } });
+  }
+
+  // ── Git history + worktrees (read-only views over the repo's own git) ──
+  getGitWorktrees(): Observable<GitWorktree[]> {
+    return this.http.get<{ worktrees: GitWorktree[] }>(
+      `${API_BASE}/api/git/worktrees`, { headers: { 'Cache-Control': 'no-cache' } })
+      .pipe(map(r => r.worktrees));
+  }
+
+  // ref: a branch name or sha to scope the log to one worktree (omit for HEAD).
+  getGitLog(ref?: string, limit = 100): Observable<GitCommit[]> {
+    let params = new HttpParams().set('limit', String(limit));
+    if (ref) params = params.set('ref', ref);
+    return this.http.get<{ commits: GitCommit[] }>(
+      `${API_BASE}/api/git/log`, { params, headers: { 'Cache-Control': 'no-cache' } })
+      .pipe(map(r => r.commits));
   }
 
   // ── Saved panel layouts ──
