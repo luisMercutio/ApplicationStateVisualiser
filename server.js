@@ -248,6 +248,74 @@ app.get('/api/claude/sessions', (_req, res) => {
   );
 });
 
+// ── Git: history + worktrees ──────────────────────────────────────────────────
+// Read-only views over the repo's OWN git, for the in-app Git page. Everything
+// runs through the same WSL git used for Claude worktrees, so the worktree paths
+// shown here line up with the sessions page. Field separator \x1f (unit sep) can't
+// occur in commit metadata, so parsing stays trivial.
+const GIT_LOG_FMT = ['%H', '%h', '%an', '%ae', '%at', '%D', '%s'].join('%x1f');
+
+app.get('/api/git/worktrees', async (_req, res) => {
+  try {
+    const repoWsl = toWslPath(__dirname);
+    const { stdout } = await wsl(['git', '-C', repoWsl, 'worktree', 'list', '--porcelain']);
+    const worktrees = [];
+    let cur = null;
+    for (const line of stdout.split(/\r?\n/)) {
+      if (line.startsWith('worktree ')) {
+        cur = { path: line.slice('worktree '.length), head: null, branch: null,
+                detached: false, bare: false, locked: false };
+        worktrees.push(cur);
+      } else if (!cur) {
+        continue;
+      } else if (line.startsWith('HEAD ')) {
+        cur.head = line.slice('HEAD '.length);
+      } else if (line.startsWith('branch ')) {
+        cur.branch = line.slice('branch '.length).replace(/^refs\/heads\//, '');
+      } else if (line === 'detached') {
+        cur.detached = true;
+      } else if (line === 'bare') {
+        cur.bare = true;
+      } else if (line === 'locked' || line.startsWith('locked ')) {
+        cur.locked = true;
+      }
+    }
+    if (worktrees[0]) worktrees[0].main = true; // git lists the primary tree first
+    res.json({ worktrees });
+  } catch (err) {
+    res.status(500).json({ error: (err.stderr || err.message || String(err)).trim() });
+  }
+});
+
+app.get('/api/git/log', async (req, res) => {
+  try {
+    const repoWsl = toWslPath(__dirname);
+    const limit = clampInt(req.query.limit, 100, 1, 1000);
+    // Optional ref (branch name or sha) to scope the log to one worktree's branch.
+    // Constrain it to ref-safe characters so it can't smuggle extra git args.
+    const ref = String(req.query.ref || '').trim();
+    if (ref && !/^[A-Za-z0-9._/-]+$/.test(ref)) {
+      return res.status(400).json({ error: 'invalid ref' });
+    }
+    const args = ['git', '-C', repoWsl, 'log', `--pretty=format:${GIT_LOG_FMT}`, '-n', String(limit)];
+    if (ref) args.push(ref);
+    args.push('--'); // terminate revisions: nothing after is treated as a pathspec
+    const { stdout } = await wsl(args);
+    const commits = stdout.split(/\r?\n/).filter(Boolean).map((line) => {
+      const [hash, short, author, email, at, refs, subject] = line.split('\x1f');
+      return {
+        hash, short, author, email,
+        date: Number(at) * 1000,
+        refs: refs ? refs.split(', ').map((s) => s.trim()).filter(Boolean) : [],
+        subject: subject || '',
+      };
+    });
+    res.json({ commits });
+  } catch (err) {
+    res.status(500).json({ error: (err.stderr || err.message || String(err)).trim() });
+  }
+});
+
 // ── Database connections (Store A + target B…Z registry) ──────────────────────
 // Store A is the viewer's own MariaDB database; it holds the encrypted profiles
 // for the target application databases whose state we display. The selector in
