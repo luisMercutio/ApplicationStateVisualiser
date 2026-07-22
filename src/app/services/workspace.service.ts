@@ -14,10 +14,22 @@ export class WorkspaceService {
   // once (see takeTerminalSession) so a later plain navigation doesn't reattach.
   private readonly terminalSession = signal<string>('');
 
+  // The Business Rule (its creationIndex) the Diagram view should focus on. The
+  // BR Diagram page has no input binding (hosted by the app-shell @switch), so a
+  // signal here is how the chosen rule reaches it. Read reactively by the view.
+  private readonly brDiagram = signal<string>('');
+  readonly brDiagramId = this.brDiagram.asReadonly();
+
   // Switch to the Terminal page focused on `session`.
   openTerminal(session: string): void {
     this.terminalSession.set(session);
     this.page.set('terminal');
+  }
+
+  // Switch to the per-BR Diagram page focused on the rule `brId` (its creationIndex).
+  openBrDiagram(brId: string): void {
+    this.brDiagram.set(brId);
+    this.page.set('br-diagram');
   }
 
   // Read the requested session and clear it, so it only takes effect once.

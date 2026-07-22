@@ -76,7 +76,7 @@ export class AgentInfoDialogComponent implements OnInit, OnDestroy {
   data = inject<AgentInfoDialogData>(MAT_DIALOG_DATA);
 
   entries = signal<BrAgentInfo[]>([]);
-  drafts = signal<Record<string, string>>({});
+  drafts = signal<Record<string, string | undefined>>({});
   newText = '';
 
   private sub?: Subscription;

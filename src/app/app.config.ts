@@ -12,6 +12,8 @@ import { connectionsFeature } from './store/connections/connections.reducer';
 import { ConnectionsEffects } from './store/connections/connections.effects';
 import { appDataFeature } from './store/app-data/app-data.reducer';
 import { AppDataEffects } from './store/app-data/app-data.effects';
+import { technicalSpecsFeature } from './store/technical-specs/technical-specs.reducer';
+import { TechnicalSpecsEffects } from './store/technical-specs/technical-specs.effects';
 import { methodologyFeature } from './store/methodology/methodology.reducer';
 import { MethodologyEffects } from './store/methodology/methodology.effects';
 
@@ -25,9 +27,10 @@ export const appConfig: ApplicationConfig = {
       [layoutsFeature.name]: layoutsFeature.reducer,
       [connectionsFeature.name]: connectionsFeature.reducer,
       [appDataFeature.name]: appDataFeature.reducer,
+      [technicalSpecsFeature.name]: technicalSpecsFeature.reducer,
       [methodologyFeature.name]: methodologyFeature.reducer,
     }),
-    provideEffects([LayoutEffects, LayoutsEffects, ConnectionsEffects, AppDataEffects, MethodologyEffects]),
+    provideEffects([LayoutEffects, LayoutsEffects, ConnectionsEffects, AppDataEffects, TechnicalSpecsEffects, MethodologyEffects]),
     provideStoreDevtools({ maxAge: 25, logOnly: !isDevMode() }),
   ],
 };

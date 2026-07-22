@@ -43,6 +43,27 @@ information is additive, never a hard gate.
 
 ---
 
+## Step 0.6 — Load the Technical Specification for each Business Rule (mandatory, at start)
+
+Each BR you implement may have a **technical specification** in the active application
+database — a per-BR parent holding implementation **entries** (each authored by a
+`user` or an `agent`) and **artifacts** (previously generated file changes). Unlike
+Additional Agent Information (Step 0.5, cumulative & cross-cutting), a technical spec is
+scoped to THIS BR — it tells you specifically how to implement that one rule.
+
+For each BR you implement:
+1. Fetch its spec:
+   `curl -s "http://localhost:3001/api/db/active/technical-specs?brName=<BR-name>"`
+   (returns `{ specs: [ { id, entries:[{description,source}], artifacts:[...] } ] }` for
+   the active connection).
+2. Treat every entry `description` as an **authoritative implementation instruction** for
+   that BR. Read the `artifacts` list for context on prior file changes to that BR.
+
+If the endpoint is unreachable or returns no spec, proceed normally — this is additive,
+never a hard gate.
+
+---
+
 ## Inputs
 
 Read these files (all paths relative to `<epic-folder>`):
@@ -196,6 +217,17 @@ Return a summary:
 - Migrations added
 - Tests written (class names and test count)
 - Build and test status
+
+### 8. Register generated artifacts on each BR's technical spec (best-effort)
+For each BR that had a technical specification (from Step 0.6), register every file you
+generated for that BR as an **artifact** under its spec, so the spec stays the parent of
+its file changes:
+`POST http://localhost:3001/api/db/connections/<activeId>/technical-specs/<specId>/artifacts`
+with `{ kind, path, changeType, summary }` — where `kind` is one of
+`class-diagram|openapi|frontend-state|selectors|component|migration|test|mockup|other`
+and `changeType` is one of `add|modify|remove`. Use the `activeId` and `specId` returned
+by the Step 0.6 fetch. This is additive and best-effort: if no spec exists or the endpoint
+is unreachable, skip it.
 
 ---
 
