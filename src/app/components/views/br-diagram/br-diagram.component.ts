@@ -206,7 +206,7 @@ function esc(s: unknown, max = 42): string {
 
 function buildDiagram(rule: AppBusinessRule, spec: TechnicalSpec | null): string {
   const lines: string[] = ['flowchart LR'];
-  const center = `BR["${esc(rule.name)}${rule.category ? ' · ' + esc(rule.category, 16) : ''}\n${esc(rule.rule, 60)}"]`;
+  const center = `BR["${esc(rule.name)}${rule.category ? ' · ' + esc(rule.category, 16) : ''}<br/>${esc(rule.rule, 60)}"]`;
   lines.push(`  ${center}:::br`);
 
   rule.features.forEach((f, i) => {
@@ -230,7 +230,7 @@ function buildDiagram(rule: AppBusinessRule, spec: TechnicalSpec | null): string
   });
 
   (spec?.artifacts ?? []).forEach((a, i) => {
-    lines.push(`  a${i}["${esc(a.kind, 20)}\n${esc(a.path)}"]:::art`);
+    lines.push(`  a${i}["${esc(a.kind, 20)}<br/>${esc(a.path)}"]:::art`);
     lines.push(`  BR ==>|${esc(a.changeType, 8)}| a${i}`);
   });
 
