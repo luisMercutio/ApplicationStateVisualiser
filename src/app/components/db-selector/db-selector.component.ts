@@ -8,16 +8,15 @@ import { MatDialog } from '@angular/material/dialog';
 import { FormsModule } from '@angular/forms';
 import { Store } from '@ngrx/store';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { ConnectionsActions } from '../../store/connections/connections.actions';
+import { ApplicationsActions } from '../../store/applications/applications.actions';
 import {
-  selectConnections, selectActiveId, selectActiveConnection, selectStoreReady, selectStoreError,
-} from '../../store/connections/connections.selectors';
-import { DbConnection } from '../../models/db-connection.model';
-import { DbManagerDialogComponent } from '../db-manager-dialog/db-manager-dialog.component';
-import { DbBrowserDialogComponent } from '../db-browser-dialog/db-browser-dialog.component';
+  selectApplications, selectActiveId, selectStoreReady, selectStoreError,
+} from '../../store/applications/applications.selectors';
+import { Application } from '../../models/application.model';
+import { ApplicationsManagerDialogComponent } from '../applications-manager-dialog/applications-manager-dialog.component';
 
-// Toolbar control that switches which target database (B…Z) the app retrieves
-// state from, plus quick access to browse the active one and manage the list.
+// Toolbar control that switches which application the app retrieves state from,
+// plus quick access to manage the registered applications.
 @Component({
   selector: 'app-db-selector',
   standalone: true,
@@ -27,23 +26,18 @@ import { DbBrowserDialogComponent } from '../db-browser-dialog/db-browser-dialog
   ],
   template: `
     <mat-form-field appearance="outline" class="db-select" subscriptSizing="dynamic">
-      <mat-label>Database</mat-label>
+      <mat-label>Application</mat-label>
       <mat-select [ngModel]="activeId()" (ngModelChange)="setActive($event)"
                   [disabled]="!storeReady()" placeholder="None">
-        @for (c of connections(); track c.id) {
-          <mat-option [value]="c.id">{{ c.name }}</mat-option>
+        @for (a of applications(); track a.id) {
+          <mat-option [value]="a.id">{{ a.name }}</mat-option>
         }
       </mat-select>
     </mat-form-field>
 
-    <button mat-icon-button matTooltip="Browse active database state"
-            [disabled]="!activeConnection()" (click)="browse()">
-      <mat-icon>table_view</mat-icon>
-    </button>
-
-    <button mat-icon-button [matTooltip]="storeReady() ? 'Manage database connections' : (storeError() || 'Store A unavailable')"
+    <button mat-icon-button [matTooltip]="storeReady() ? 'Manage applications' : (storeError() || 'Store database unavailable')"
             (click)="manage()">
-      <mat-icon [class.warn]="!storeReady()">{{ storeReady() ? 'storage' : 'error_outline' }}</mat-icon>
+      <mat-icon [class.warn]="!storeReady()">{{ storeReady() ? 'apps' : 'error_outline' }}</mat-icon>
     </button>
   `,
   styles: [`
@@ -60,22 +54,16 @@ export class DbSelectorComponent {
   private store = inject(Store);
   private dialog = inject(MatDialog);
 
-  connections = toSignal(this.store.select(selectConnections), { initialValue: [] as DbConnection[] });
+  applications = toSignal(this.store.select(selectApplications), { initialValue: [] as Application[] });
   activeId = toSignal(this.store.select(selectActiveId), { initialValue: null });
-  activeConnection = toSignal(this.store.select(selectActiveConnection), { initialValue: null });
   storeReady = toSignal(this.store.select(selectStoreReady), { initialValue: false });
   storeError = toSignal(this.store.select(selectStoreError), { initialValue: null });
 
   setActive(id: string | null): void {
-    this.store.dispatch(ConnectionsActions.setActive({ id }));
-  }
-
-  browse(): void {
-    const conn = this.activeConnection();
-    if (conn) this.dialog.open(DbBrowserDialogComponent, { data: conn });
+    this.store.dispatch(ApplicationsActions.setActive({ id }));
   }
 
   manage(): void {
-    this.dialog.open(DbManagerDialogComponent);
+    this.dialog.open(ApplicationsManagerDialogComponent);
   }
 }

@@ -14,7 +14,7 @@ import { selectAgentInfo } from '../../store/app-data/app-data.selectors';
 
 export interface AgentInfoDialogData {
   rule: AppBusinessRule;
-  connectionId: string;
+  applicationId: string;
 }
 
 // Manage the Additional Agent Information attached to one Business Rule. These
@@ -103,19 +103,19 @@ export class AgentInfoDialogComponent implements OnInit, OnDestroy {
     const description = (this.drafts()[e.id] ?? '').trim();
     if (!description || description === e.description) return;
     this.store.dispatch(AppDataActions.updateAgentInfo({
-      connectionId: this.data.connectionId, infoId: e.id, input: { businessRuleId: e.businessRuleId, description },
+      applicationId: this.data.applicationId, infoId: e.id, input: { businessRuleId: e.businessRuleId, description },
     }));
   }
 
   remove(e: BrAgentInfo): void {
-    this.store.dispatch(AppDataActions.deleteAgentInfo({ connectionId: this.data.connectionId, infoId: e.id }));
+    this.store.dispatch(AppDataActions.deleteAgentInfo({ applicationId: this.data.applicationId, infoId: e.id }));
   }
 
   add(): void {
     const description = this.newText.trim();
     if (!description) return;
     this.store.dispatch(AppDataActions.createAgentInfo({
-      connectionId: this.data.connectionId, input: { businessRuleId: this.data.rule.id, description },
+      applicationId: this.data.applicationId, input: { businessRuleId: this.data.rule.id, description },
     }));
     this.newText = '';
   }

@@ -11,10 +11,10 @@ import { Store } from '@ngrx/store';
 import { Subscription } from 'rxjs';
 import { AppBusinessRule, AppBusinessRuleInput, Epic } from '../../../models/app-data.model';
 import { categoryColor } from '../../../models/business-rule.model';
-import { DbConnection } from '../../../models/db-connection.model';
+import { Application } from '../../../models/application.model';
 import { AppDataActions } from '../../../store/app-data/app-data.actions';
 import { selectEpicsWithRules, selectAppDataLoading, selectAppDataError, selectAgentInfoCountByRule } from '../../../store/app-data/app-data.selectors';
-import { selectActiveConnection } from '../../../store/connections/connections.selectors';
+import { selectActiveApplication } from '../../../store/applications/applications.selectors';
 import { BrFormDialogComponent, BrFormData } from '../../br-form-dialog/br-form-dialog.component';
 import { EpicFormDialogComponent } from '../../epic-form-dialog/epic-form-dialog.component';
 import { AgentInfoDialogComponent, AgentInfoDialogData } from '../../agent-info-dialog/agent-info-dialog.component';
@@ -52,7 +52,7 @@ const UNGROUPED = 'ungrouped';
       </div>
 
       @if (!active()) {
-        <div class="msg">Select an application connection in the toolbar to manage its Business Rules.</div>
+        <div class="msg">Select an application in the toolbar to manage its Business Rules.</div>
       } @else if (loading()) {
         <div class="msg">Loading rules…</div>
       } @else if (error()) {
@@ -169,7 +169,7 @@ export class BrListComponent implements OnInit, OnDestroy {
   private dialog = inject(MatDialog);
   private subs: Subscription[] = [];
 
-  active = signal<DbConnection | null>(null);
+  active = signal<Application | null>(null);
   loading = signal(false);
   error = signal<string | null>(null);
   lists = signal<RuleList[]>([]);
@@ -181,7 +181,7 @@ export class BrListComponent implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     this.subs.push(
-      this.store.select(selectActiveConnection).subscribe((a) => this.active.set(a)),
+      this.store.select(selectActiveApplication).subscribe((a) => this.active.set(a)),
       this.store.select(selectAppDataLoading).subscribe((v) => this.loading.set(v)),
       this.store.select(selectAppDataError).subscribe((v) => this.error.set(v)),
       this.store.select(selectAgentInfoCountByRule).subscribe((c) => this.infoCounts.set(c)),
@@ -205,32 +205,32 @@ export class BrListComponent implements OnInit, OnDestroy {
   listId(list: RuleList): string { return list.epicId ?? UNGROUPED; }
   allListIds(): string[] { return this.lists().map((l) => this.listId(l)); }
 
-  private connId(): string | null { return this.active()?.id ?? null; }
+  private appId(): string | null { return this.active()?.id ?? null; }
 
   reload(): void {
-    const id = this.connId();
-    if (id) this.store.dispatch(AppDataActions.load({ connectionId: id }));
+    const id = this.appId();
+    if (id) this.store.dispatch(AppDataActions.load({ applicationId: id }));
   }
 
   // ── Epic CRUD ──
   addEpic(): void {
     this.dialog.open(EpicFormDialogComponent).afterClosed().subscribe((input) => {
-      const id = this.connId();
-      if (input && id) this.store.dispatch(AppDataActions.createEpic({ connectionId: id, input }));
+      const id = this.appId();
+      if (input && id) this.store.dispatch(AppDataActions.createEpic({ applicationId: id, input }));
     });
   }
 
   editEpic(epic: Epic): void {
     this.dialog.open(EpicFormDialogComponent, { data: epic }).afterClosed().subscribe((input) => {
-      const id = this.connId();
-      if (input && id) this.store.dispatch(AppDataActions.updateEpic({ connectionId: id, epicId: epic.id, input }));
+      const id = this.appId();
+      if (input && id) this.store.dispatch(AppDataActions.updateEpic({ applicationId: id, epicId: epic.id, input }));
     });
   }
 
   deleteEpic(epic: Epic): void {
-    const id = this.connId();
+    const id = this.appId();
     if (id && confirm(`Delete epic "${epic.title}"? Its Business Rules are kept (moved to Ungrouped).`)) {
-      this.store.dispatch(AppDataActions.deleteEpic({ connectionId: id, epicId: epic.id }));
+      this.store.dispatch(AppDataActions.deleteEpic({ applicationId: id, epicId: epic.id }));
     }
   }
 
@@ -238,30 +238,30 @@ export class BrListComponent implements OnInit, OnDestroy {
   addRule(defaultEpicId: string | null): void {
     const data: BrFormData = { epics: this.epics, defaultEpicId };
     this.dialog.open(BrFormDialogComponent, { data }).afterClosed().subscribe((input: AppBusinessRuleInput | undefined) => {
-      const id = this.connId();
-      if (input && id) this.store.dispatch(AppDataActions.createRule({ connectionId: id, input }));
+      const id = this.appId();
+      if (input && id) this.store.dispatch(AppDataActions.createRule({ applicationId: id, input }));
     });
   }
 
   editRule(rule: AppBusinessRule): void {
     const data: BrFormData = { rule, epics: this.epics };
     this.dialog.open(BrFormDialogComponent, { data }).afterClosed().subscribe((input: AppBusinessRuleInput | undefined) => {
-      const id = this.connId();
-      if (input && id) this.store.dispatch(AppDataActions.updateRule({ connectionId: id, ruleId: rule.id, input }));
+      const id = this.appId();
+      if (input && id) this.store.dispatch(AppDataActions.updateRule({ applicationId: id, ruleId: rule.id, input }));
     });
   }
 
   deleteRule(rule: AppBusinessRule): void {
-    const id = this.connId();
+    const id = this.appId();
     if (id && confirm(`Delete Business Rule "${rule.name}"?`)) {
-      this.store.dispatch(AppDataActions.deleteRule({ connectionId: id, ruleId: rule.id }));
+      this.store.dispatch(AppDataActions.deleteRule({ applicationId: id, ruleId: rule.id }));
     }
   }
 
   openAgentInfo(rule: AppBusinessRule): void {
-    const id = this.connId();
+    const id = this.appId();
     if (!id) return;
-    const data: AgentInfoDialogData = { rule, connectionId: id };
+    const data: AgentInfoDialogData = { rule, applicationId: id };
     this.dialog.open(AgentInfoDialogComponent, { data });
   }
 
@@ -279,7 +279,7 @@ export class BrListComponent implements OnInit, OnDestroy {
 
   /** Rewrite epicId + a global running seq for any rule whose position changed. */
   private persistOrder(): void {
-    const id = this.connId();
+    const id = this.appId();
     if (!id) return;
     let i = 0;
     for (const list of this.lists()) {
@@ -288,7 +288,7 @@ export class BrListComponent implements OnInit, OnDestroy {
         const newSeq = String(i);
         if (r.seq !== newSeq || r.epicId !== list.epicId) {
           this.store.dispatch(AppDataActions.updateRule({
-            connectionId: id, ruleId: r.id, input: ruleToInput(r, { seq: newSeq, epicId: list.epicId }),
+            applicationId: id, ruleId: r.id, input: ruleToInput(r, { seq: newSeq, epicId: list.epicId }),
           }));
         }
       }

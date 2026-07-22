@@ -5,8 +5,8 @@ import { Subscription, filter, take, distinctUntilChanged } from 'rxjs';
 import { selectPanels } from './store/layout/layout.selectors';
 import { LayoutActions } from './store/layout/layout.actions';
 import { LayoutsActions } from './store/layouts/layouts.actions';
-import { ConnectionsActions } from './store/connections/connections.actions';
-import { selectActiveId } from './store/connections/connections.selectors';
+import { ApplicationsActions } from './store/applications/applications.actions';
+import { selectActiveId } from './store/applications/applications.selectors';
 import { ToolbarComponent } from './components/toolbar/toolbar.component';
 import { PanelGridComponent } from './components/panel-grid/panel-grid.component';
 import { AddPanelDialogComponent } from './components/add-panel-dialog/add-panel-dialog.component';
@@ -58,12 +58,12 @@ export class AppComponent implements OnInit, OnDestroy {
   page = signal<AppPage>('br-list');
 
   ngOnInit(): void {
-    // A "project" is the active database connection, chosen in the toolbar's
-    // connection selector — there is no filesystem project root any more.
-    this.store.dispatch(ConnectionsActions.loadConnections());
+    // A "project" is the active application, chosen in the toolbar's application
+    // selector — there is no filesystem project root any more.
+    this.store.dispatch(ApplicationsActions.loadApplications());
     this.store.dispatch(LayoutsActions.loadLayouts());
 
-    // Selecting a database makes the Business Rules its main page.
+    // Selecting an application makes the Business Rules its main page.
     this.subs.push(
       this.store.select(selectActiveId).pipe(distinctUntilChanged()).subscribe((id) => {
         if (id) this.page.set('br-list');

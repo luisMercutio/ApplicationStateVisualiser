@@ -6,10 +6,10 @@ import { MatDialog } from '@angular/material/dialog';
 import { Store } from '@ngrx/store';
 import { Subscription } from 'rxjs';
 import { Note, NoteInput } from '../../../models/note.model';
-import { DbConnection } from '../../../models/db-connection.model';
+import { Application } from '../../../models/application.model';
 import { AppDataActions } from '../../../store/app-data/app-data.actions';
 import { selectNotes, selectAppDataLoading, selectAppDataError } from '../../../store/app-data/app-data.selectors';
-import { selectActiveConnection } from '../../../store/connections/connections.selectors';
+import { selectActiveApplication } from '../../../store/applications/applications.selectors';
 import { NoteFormDialogComponent } from '../../note-form-dialog/note-form-dialog.component';
 
 /**
@@ -36,7 +36,7 @@ import { NoteFormDialogComponent } from '../../note-form-dialog/note-form-dialog
       </div>
 
       @if (!active()) {
-        <div class="msg">Select an application connection in the toolbar to see its notes.</div>
+        <div class="msg">Select an application in the toolbar to see its notes.</div>
       } @else if (loading()) {
         <div class="msg">Loading notes…</div>
       } @else if (error()) {
@@ -93,14 +93,14 @@ export class NotesListComponent implements OnInit, OnDestroy {
   private dialog = inject(MatDialog);
   private subs: Subscription[] = [];
 
-  active = signal<DbConnection | null>(null);
+  active = signal<Application | null>(null);
   loading = signal(false);
   error = signal<string | null>(null);
   notes = signal<Note[]>([]);
 
   ngOnInit(): void {
     this.subs.push(
-      this.store.select(selectActiveConnection).subscribe((a) => this.active.set(a)),
+      this.store.select(selectActiveApplication).subscribe((a) => this.active.set(a)),
       this.store.select(selectAppDataLoading).subscribe((v) => this.loading.set(v)),
       this.store.select(selectAppDataError).subscribe((v) => this.error.set(v)),
       this.store.select(selectNotes).subscribe((n) => this.notes.set(n)),
@@ -109,31 +109,31 @@ export class NotesListComponent implements OnInit, OnDestroy {
 
   ngOnDestroy(): void { this.subs.forEach((s) => s.unsubscribe()); }
 
-  private connId(): string | null { return this.active()?.id ?? null; }
+  private appId(): string | null { return this.active()?.id ?? null; }
 
   addNote(): void {
     this.dialog.open(NoteFormDialogComponent).afterClosed().subscribe((input: NoteInput | undefined) => {
-      const id = this.connId();
-      if (input && id) this.store.dispatch(AppDataActions.createNote({ connectionId: id, input }));
+      const id = this.appId();
+      if (input && id) this.store.dispatch(AppDataActions.createNote({ applicationId: id, input }));
     });
   }
 
   editNote(note: Note): void {
     this.dialog.open(NoteFormDialogComponent, { data: note }).afterClosed().subscribe((input: NoteInput | undefined) => {
-      const id = this.connId();
-      if (input && id) this.store.dispatch(AppDataActions.updateNote({ connectionId: id, noteId: note.id, input }));
+      const id = this.appId();
+      if (input && id) this.store.dispatch(AppDataActions.updateNote({ applicationId: id, noteId: note.id, input }));
     });
   }
 
   deleteNote(note: Note): void {
-    const id = this.connId();
+    const id = this.appId();
     if (id && confirm(`Delete note "${note.title}"?`)) {
-      this.store.dispatch(AppDataActions.deleteNote({ connectionId: id, noteId: note.id }));
+      this.store.dispatch(AppDataActions.deleteNote({ applicationId: id, noteId: note.id }));
     }
   }
 
   reload(): void {
-    const id = this.connId();
-    if (id) this.store.dispatch(AppDataActions.load({ connectionId: id }));
+    const id = this.appId();
+    if (id) this.store.dispatch(AppDataActions.load({ applicationId: id }));
   }
 }

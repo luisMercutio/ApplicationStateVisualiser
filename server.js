@@ -124,183 +124,38 @@ app.get('/api/tmux/sessions', (_req, res) => {
   );
 });
 
-// ── Database connections (Store A + target B…Z registry) ──────────────────────
-// Store A is the viewer's own MariaDB database; it holds the encrypted profiles
-// for the target application databases whose state we display. The selector in
-// the UI flips which target the browse endpoints read from. All handlers funnel
-// errors through a shared helper so a downed MariaDB surfaces as 503, a bad body
-// as 400, and everything else as 500.
+// ── Applications + their state (single store DB) ──────────────────────────────
+// Everything lives in one MariaDB database. `applications` is the top-level
+// entity; epics/business-rules/notes/agent-info are scoped by application id.
+// The selector in the UI flips which application the state endpoints read/write.
+// All handlers funnel errors through a shared helper so a downed MariaDB surfaces
+// as 503, a bad body as 400, and everything else as 500.
 function sendDbError(res, err) {
   res.status(err.status || 500).json({ error: err.message });
 }
 
 app.get('/api/db/status', (_req, res) => res.json(dbStore.status()));
 
-app.get('/api/db/connections', async (_req, res) => {
-  try { res.json(await dbStore.listConnections()); } catch (err) { sendDbError(res, err); }
+app.get('/api/applications', async (_req, res) => {
+  try { res.json({ applications: await dbStore.listApplications() }); } catch (err) { sendDbError(res, err); }
 });
 
-app.post('/api/db/connections', async (req, res) => {
-  try { res.status(201).json(await dbStore.createConnection(req.body || {})); } catch (err) { sendDbError(res, err); }
+app.post('/api/applications', async (req, res) => {
+  try { res.status(201).json(await dbStore.createApplication(req.body || {})); } catch (err) { sendDbError(res, err); }
 });
 
-// Test arbitrary (unsaved) parameters — lets the form verify before saving.
-app.post('/api/db/connections/test', async (req, res) => {
-  try { res.json(await dbStore.testParams(req.body || {})); } catch (err) { sendDbError(res, err); }
-});
-
-app.put('/api/db/connections/:id', async (req, res) => {
-  try {
-    const updated = await dbStore.updateConnection(req.params.id, req.body || {});
-    if (!updated) return res.status(404).json({ error: 'connection not found' });
-    res.json(updated);
-  } catch (err) { sendDbError(res, err); }
-});
-
-app.delete('/api/db/connections/:id', async (req, res) => {
-  try {
-    const ok = await dbStore.deleteConnection(req.params.id);
-    if (!ok) return res.status(404).json({ error: 'connection not found' });
-    res.json({ ok: true });
-  } catch (err) { sendDbError(res, err); }
-});
-
-app.post('/api/db/connections/:id/test', async (req, res) => {
-  try { res.json(await dbStore.testExisting(req.params.id)); } catch (err) { sendDbError(res, err); }
-});
-
-// Active selection — which target the app currently retrieves state from.
-app.get('/api/db/active', async (_req, res) => {
+// Active selection — which application the app currently shows state for.
+app.get('/api/applications/active', async (_req, res) => {
   try { res.json({ activeId: await dbStore.getActiveId() }); } catch (err) { sendDbError(res, err); }
 });
 
-app.put('/api/db/active', async (req, res) => {
+app.put('/api/applications/active', async (req, res) => {
   try { res.json({ activeId: await dbStore.setActiveId((req.body || {}).id ?? null) }); } catch (err) { sendDbError(res, err); }
 });
 
-// Browse the target: list its tables, then preview rows of one.
-app.get('/api/db/connections/:id/tables', async (req, res) => {
-  try { res.json({ tables: await dbStore.listTables(req.params.id) }); } catch (err) { sendDbError(res, err); }
-});
-
-app.get('/api/db/connections/:id/tables/:table/rows', async (req, res) => {
-  try { res.json(await dbStore.previewTable(req.params.id, req.params.table, req.query.limit)); } catch (err) { sendDbError(res, err); }
-});
-
-// ── Application data: Epics + Business Rules (in the target app's own DB) ──────
-// Every route is scoped to a connection id: the viewer flips the active
-// connection to switch which application's epics/BRs it reads and edits. The
-// tables are auto-provisioned in the target's DB on first touch.
-app.get('/api/db/connections/:id/epics', async (req, res) => {
-  try { res.json({ epics: await dbStore.listEpics(req.params.id) }); } catch (err) { sendDbError(res, err); }
-});
-
-app.post('/api/db/connections/:id/epics', async (req, res) => {
-  try { res.status(201).json(await dbStore.createEpic(req.params.id, req.body || {})); } catch (err) { sendDbError(res, err); }
-});
-
-app.put('/api/db/connections/:id/epics/:epicId', async (req, res) => {
-  try {
-    const updated = await dbStore.updateEpic(req.params.id, req.params.epicId, req.body || {});
-    if (!updated) return res.status(404).json({ error: 'epic not found' });
-    res.json(updated);
-  } catch (err) { sendDbError(res, err); }
-});
-
-app.delete('/api/db/connections/:id/epics/:epicId', async (req, res) => {
-  try {
-    const ok = await dbStore.deleteEpic(req.params.id, req.params.epicId);
-    if (!ok) return res.status(404).json({ error: 'epic not found' });
-    res.json({ ok: true });
-  } catch (err) { sendDbError(res, err); }
-});
-
-// Notes — free-form ideas kept against the active application, same connection
-// scoping as epics/business-rules.
-app.get('/api/db/connections/:id/notes', async (req, res) => {
-  try { res.json({ notes: await dbStore.listNotes(req.params.id) }); } catch (err) { sendDbError(res, err); }
-});
-
-app.post('/api/db/connections/:id/notes', async (req, res) => {
-  try { res.status(201).json(await dbStore.createNote(req.params.id, req.body || {})); } catch (err) { sendDbError(res, err); }
-});
-
-app.put('/api/db/connections/:id/notes/:noteId', async (req, res) => {
-  try {
-    const updated = await dbStore.updateNote(req.params.id, req.params.noteId, req.body || {});
-    if (!updated) return res.status(404).json({ error: 'note not found' });
-    res.json(updated);
-  } catch (err) { sendDbError(res, err); }
-});
-
-app.delete('/api/db/connections/:id/notes/:noteId', async (req, res) => {
-  try {
-    const ok = await dbStore.deleteNote(req.params.id, req.params.noteId);
-    if (!ok) return res.status(404).json({ error: 'note not found' });
-    res.json({ ok: true });
-  } catch (err) { sendDbError(res, err); }
-});
-
-app.get('/api/db/connections/:id/business-rules', async (req, res) => {
-  try { res.json({ rules: await dbStore.listBusinessRules(req.params.id) }); } catch (err) { sendDbError(res, err); }
-});
-
-app.post('/api/db/connections/:id/business-rules', async (req, res) => {
-  try { res.status(201).json(await dbStore.createBusinessRule(req.params.id, req.body || {})); } catch (err) { sendDbError(res, err); }
-});
-
-app.put('/api/db/connections/:id/business-rules/:brId', async (req, res) => {
-  try {
-    const updated = await dbStore.updateBusinessRule(req.params.id, req.params.brId, req.body || {});
-    if (!updated) return res.status(404).json({ error: 'business rule not found' });
-    res.json(updated);
-  } catch (err) { sendDbError(res, err); }
-});
-
-app.delete('/api/db/connections/:id/business-rules/:brId', async (req, res) => {
-  try {
-    const ok = await dbStore.deleteBusinessRule(req.params.id, req.params.brId);
-    if (!ok) return res.status(404).json({ error: 'business rule not found' });
-    res.json({ ok: true });
-  } catch (err) { sendDbError(res, err); }
-});
-
-// ── Additional agent information (extra agent-facing context per Business Rule) ─
-// `?uptoSeq=<seq>` filters to entries whose referenced BR has been reached by
-// development (referenced BR seq <= uptoSeq) — what the develop agents load.
-app.get('/api/db/connections/:id/agent-info', async (req, res) => {
-  try {
-    const { uptoSeq } = req.query;
-    const info = uptoSeq != null
-      ? await dbStore.listAgentInfoUpToSeq(req.params.id, String(uptoSeq))
-      : await dbStore.listAgentInfo(req.params.id);
-    res.json({ info });
-  } catch (err) { sendDbError(res, err); }
-});
-
-app.post('/api/db/connections/:id/agent-info', async (req, res) => {
-  try { res.status(201).json(await dbStore.createAgentInfo(req.params.id, req.body || {})); } catch (err) { sendDbError(res, err); }
-});
-
-app.put('/api/db/connections/:id/agent-info/:infoId', async (req, res) => {
-  try {
-    const updated = await dbStore.updateAgentInfo(req.params.id, req.params.infoId, req.body || {});
-    if (!updated) return res.status(404).json({ error: 'agent information not found' });
-    res.json(updated);
-  } catch (err) { sendDbError(res, err); }
-});
-
-app.delete('/api/db/connections/:id/agent-info/:infoId', async (req, res) => {
-  try {
-    const ok = await dbStore.deleteAgentInfo(req.params.id, req.params.infoId);
-    if (!ok) return res.status(404).json({ error: 'agent information not found' });
-    res.json({ ok: true });
-  } catch (err) { sendDbError(res, err); }
-});
-
 // Convenience read for the develop agents: the applicable agent info for the
-// ACTIVE connection, filtered to development progress via ?uptoSeq=<seq>.
-app.get('/api/db/active/agent-info', async (req, res) => {
+// ACTIVE application, filtered to development progress via ?uptoSeq=<seq>.
+app.get('/api/applications/active/agent-info', async (req, res) => {
   try {
     const activeId = await dbStore.getActiveId();
     if (!activeId) return res.json({ info: [], activeId: null });
@@ -309,6 +164,132 @@ app.get('/api/db/active/agent-info', async (req, res) => {
       ? await dbStore.listAgentInfoUpToSeq(activeId, String(uptoSeq))
       : await dbStore.listAgentInfo(activeId);
     res.json({ info, activeId });
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.put('/api/applications/:appId', async (req, res) => {
+  try {
+    const updated = await dbStore.updateApplication(req.params.appId, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'application not found' });
+    res.json(updated);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/applications/:appId', async (req, res) => {
+  try {
+    const ok = await dbStore.deleteApplication(req.params.appId);
+    if (!ok) return res.status(404).json({ error: 'application not found' });
+    res.json({ ok: true });
+  } catch (err) { sendDbError(res, err); }
+});
+
+// ── Application state: Epics + Business Rules + Notes ──────────────────────────
+// Every route is scoped to an application id: the viewer flips the active
+// application to switch which epics/BRs it reads and edits.
+app.get('/api/applications/:appId/epics', async (req, res) => {
+  try { res.json({ epics: await dbStore.listEpics(req.params.appId) }); } catch (err) { sendDbError(res, err); }
+});
+
+app.post('/api/applications/:appId/epics', async (req, res) => {
+  try { res.status(201).json(await dbStore.createEpic(req.params.appId, req.body || {})); } catch (err) { sendDbError(res, err); }
+});
+
+app.put('/api/applications/:appId/epics/:epicId', async (req, res) => {
+  try {
+    const updated = await dbStore.updateEpic(req.params.appId, req.params.epicId, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'epic not found' });
+    res.json(updated);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/applications/:appId/epics/:epicId', async (req, res) => {
+  try {
+    const ok = await dbStore.deleteEpic(req.params.appId, req.params.epicId);
+    if (!ok) return res.status(404).json({ error: 'epic not found' });
+    res.json({ ok: true });
+  } catch (err) { sendDbError(res, err); }
+});
+
+// Notes — free-form ideas kept against the active application, same application
+// scoping as epics/business-rules.
+app.get('/api/applications/:appId/notes', async (req, res) => {
+  try { res.json({ notes: await dbStore.listNotes(req.params.appId) }); } catch (err) { sendDbError(res, err); }
+});
+
+app.post('/api/applications/:appId/notes', async (req, res) => {
+  try { res.status(201).json(await dbStore.createNote(req.params.appId, req.body || {})); } catch (err) { sendDbError(res, err); }
+});
+
+app.put('/api/applications/:appId/notes/:noteId', async (req, res) => {
+  try {
+    const updated = await dbStore.updateNote(req.params.appId, req.params.noteId, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'note not found' });
+    res.json(updated);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/applications/:appId/notes/:noteId', async (req, res) => {
+  try {
+    const ok = await dbStore.deleteNote(req.params.appId, req.params.noteId);
+    if (!ok) return res.status(404).json({ error: 'note not found' });
+    res.json({ ok: true });
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.get('/api/applications/:appId/business-rules', async (req, res) => {
+  try { res.json({ rules: await dbStore.listBusinessRules(req.params.appId) }); } catch (err) { sendDbError(res, err); }
+});
+
+app.post('/api/applications/:appId/business-rules', async (req, res) => {
+  try { res.status(201).json(await dbStore.createBusinessRule(req.params.appId, req.body || {})); } catch (err) { sendDbError(res, err); }
+});
+
+app.put('/api/applications/:appId/business-rules/:brId', async (req, res) => {
+  try {
+    const updated = await dbStore.updateBusinessRule(req.params.appId, req.params.brId, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'business rule not found' });
+    res.json(updated);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/applications/:appId/business-rules/:brId', async (req, res) => {
+  try {
+    const ok = await dbStore.deleteBusinessRule(req.params.appId, req.params.brId);
+    if (!ok) return res.status(404).json({ error: 'business rule not found' });
+    res.json({ ok: true });
+  } catch (err) { sendDbError(res, err); }
+});
+
+// ── Additional agent information (extra agent-facing context per Business Rule) ─
+// `?uptoSeq=<seq>` filters to entries whose referenced BR has been reached by
+// development (referenced BR seq <= uptoSeq) — what the develop agents load.
+app.get('/api/applications/:appId/agent-info', async (req, res) => {
+  try {
+    const { uptoSeq } = req.query;
+    const info = uptoSeq != null
+      ? await dbStore.listAgentInfoUpToSeq(req.params.appId, String(uptoSeq))
+      : await dbStore.listAgentInfo(req.params.appId);
+    res.json({ info });
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.post('/api/applications/:appId/agent-info', async (req, res) => {
+  try { res.status(201).json(await dbStore.createAgentInfo(req.params.appId, req.body || {})); } catch (err) { sendDbError(res, err); }
+});
+
+app.put('/api/applications/:appId/agent-info/:infoId', async (req, res) => {
+  try {
+    const updated = await dbStore.updateAgentInfo(req.params.appId, req.params.infoId, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'agent information not found' });
+    res.json(updated);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/applications/:appId/agent-info/:infoId', async (req, res) => {
+  try {
+    const ok = await dbStore.deleteAgentInfo(req.params.appId, req.params.infoId);
+    if (!ok) return res.status(404).json({ error: 'agent information not found' });
+    res.json({ ok: true });
   } catch (err) { sendDbError(res, err); }
 });
 

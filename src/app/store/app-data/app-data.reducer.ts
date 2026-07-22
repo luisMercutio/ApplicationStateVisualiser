@@ -4,7 +4,7 @@ import { Note } from '../../models/note.model';
 import { AppDataActions } from './app-data.actions';
 
 export interface AppDataState {
-  connectionId: string | null; // which connection the data belongs to
+  applicationId: string | null; // which application the data belongs to
   epics: Epic[];
   rules: AppBusinessRule[];
   agentInfo: BrAgentInfo[];
@@ -14,7 +14,7 @@ export interface AppDataState {
 }
 
 const initialState: AppDataState = {
-  connectionId: null,
+  applicationId: null,
   epics: [],
   rules: [],
   agentInfo: [],
@@ -47,9 +47,9 @@ export const appDataFeature = createFeature({
   name: 'appData',
   reducer: createReducer(
     initialState,
-    on(AppDataActions.load, (state, { connectionId }) => ({ ...state, loading: true, error: null, connectionId })),
-    on(AppDataActions.loadSuccess, (state, { connectionId, epics, rules, agentInfo, notes }) => ({
-      ...state, connectionId, epics, rules, agentInfo, notes, loading: false, error: null,
+    on(AppDataActions.load, (state, { applicationId }) => ({ ...state, loading: true, error: null, applicationId })),
+    on(AppDataActions.loadSuccess, (state, { applicationId, epics, rules, agentInfo, notes }) => ({
+      ...state, applicationId, epics, rules, agentInfo, notes, loading: false, error: null,
     })),
     on(AppDataActions.loadFailure, (state, { error }) => ({ ...state, loading: false, error })),
     on(AppDataActions.clear, () => ({ ...initialState })),
