@@ -2,6 +2,9 @@ import { Component, OnInit, OnDestroy, inject, signal, computed } from '@angular
 import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { MatTooltipModule } from '@angular/material/tooltip';
+import { MatMenuModule } from '@angular/material/menu';
+import { MatDialog } from '@angular/material/dialog';
+import { MatSnackBar } from '@angular/material/snack-bar';
 import { Store } from '@ngrx/store';
 import { Subscription, timer } from 'rxjs';
 import { switchMap } from 'rxjs/operators';
@@ -9,6 +12,7 @@ import { FileService } from '../../../services/file.service';
 import { ClaudeSession, AppBusinessRule } from '../../../models/app-data.model';
 import { selectAppRules } from '../../../store/app-data/app-data.selectors';
 import { TerminalComponent } from '../terminal/terminal.component';
+import { ClaudeConversationDialogComponent } from './claude-conversation-dialog.component';
 
 // Mirror server.js brSlug so a rule name maps deterministically to its tmux
 // session (`claude-<slug>`) and branch (`claude/<slug>`). This is how the page
@@ -27,6 +31,7 @@ interface Row {
   brName: string | null; // the BR that spawned it, when identifiable
   branch: string;        // claude/<slug>
   running: boolean;      // live in tmux right now
+  hasTranscript: boolean;// an archived conversation exists → viewable
 }
 
 // Lists the Claude sessions spawned by "Submit with Claude": each is a claude CLI
@@ -36,7 +41,7 @@ interface Row {
 @Component({
   selector: 'app-claude-sessions',
   standalone: true,
-  imports: [MatIconModule, MatButtonModule, MatTooltipModule, TerminalComponent],
+  imports: [MatIconModule, MatButtonModule, MatTooltipModule, MatMenuModule, TerminalComponent],
   template: `
     <div class="cs-root">
       <div class="cs-toolbar">
@@ -59,10 +64,27 @@ interface Row {
                 <div class="cs-br">{{ row.brName ?? row.session }}</div>
                 <div class="cs-sub"><span class="mono">{{ row.session }}</span> · <span class="mono">{{ row.branch }}</span></div>
               </div>
-              <span class="state" [class.on]="row.running">{{ row.running ? 'running' : 'stopped' }}</span>
-              <button mat-stroked-button class="attach" (click)="attach(row.session)" [disabled]="!row.running">
-                <mat-icon>open_in_new</mat-icon> Attach
-              </button>
+              <span class="state" [class.on]="row.running">{{ row.running ? 'running' : 'dead' }}</span>
+              @if (row.running) {
+                <button mat-stroked-button class="attach" (click)="attach(row.session)">
+                  <mat-icon>open_in_new</mat-icon> Attach
+                </button>
+              } @else {
+                <button mat-stroked-button class="attach" (click)="reopen(row)" [disabled]="busy() === row.session">
+                  <mat-icon>{{ busy() === row.session ? 'hourglass_empty' : 'play_arrow' }}</mat-icon> Reopen
+                </button>
+              }
+              <button mat-icon-button class="sm" [matMenuTriggerFor]="menu" matTooltip="More"><mat-icon>more_vert</mat-icon></button>
+              <mat-menu #menu>
+                @if (row.running) {
+                  <button mat-menu-item (click)="attach(row.session)"><mat-icon>open_in_new</mat-icon> Attach</button>
+                } @else {
+                  <button mat-menu-item (click)="reopen(row)" [disabled]="busy() === row.session"><mat-icon>play_arrow</mat-icon> Reopen (resume)</button>
+                }
+                <button mat-menu-item (click)="viewConversation(row)" [disabled]="!row.hasTranscript">
+                  <mat-icon>forum</mat-icon> View conversation
+                </button>
+              </mat-menu>
             </div>
           }
         </div>
@@ -107,11 +129,14 @@ interface Row {
 export class ClaudeSessionsComponent implements OnInit, OnDestroy {
   private store = inject(Store);
   private file = inject(FileService);
+  private dialog = inject(MatDialog);
+  private snack = inject(MatSnackBar);
   private subs: Subscription[] = [];
 
   private rules = signal<AppBusinessRule[]>([]);
   private sessions = signal<ClaudeSession[]>([]);
   selected = signal<string>('');
+  busy = signal<string>('');   // session currently being reopened
   error = signal<string | null>(null);
 
   rows = computed<Row[]>(() => {
@@ -123,20 +148,26 @@ export class ClaudeSessionsComponent implements OnInit, OnDestroy {
     }
     const seen = new Set<string>();
     const rows: Row[] = [];
+    // Server list: running (live in tmux) + dead (worktree or archive exists).
     for (const s of this.sessions()) {
-      rows.push({ session: s.name, brName: bySession.get(s.name) ?? null, branch: branchFor(s.name), running: true });
+      rows.push({
+        session: s.name, brName: bySession.get(s.name) ?? null, branch: branchFor(s.name),
+        running: s.running, hasTranscript: !!s.hasTranscript,
+      });
       seen.add(s.name);
     }
-    // Flagged BRs whose session isn't currently live → show as stopped.
+    // Flagged BRs the server hasn't surfaced yet (submitted, but no worktree/archive
+    // — e.g. the claude CLI was missing) → show as dead so they're still visible.
     for (const r of rules) {
       if (!r.needsToBeEstablished) continue;
       const slug = brSlug(r.name);
       const name = `claude-${slug}`;
       if (!slug || seen.has(name)) continue;
-      rows.push({ session: name, brName: r.name, branch: branchFor(name), running: false });
+      rows.push({ session: name, brName: r.name, branch: branchFor(name), running: false, hasTranscript: false });
       seen.add(name);
     }
-    return rows;
+    // Running first, then alphabetical — keeps the live work at the top.
+    return rows.sort((a, b) => (a.running === b.running ? a.session.localeCompare(b.session) : a.running ? -1 : 1));
   });
 
   runningCount = computed(() => this.rows().filter(r => r.running).length);
@@ -165,6 +196,45 @@ export class ClaudeSessionsComponent implements OnInit, OnDestroy {
 
   attach(session: string): void { this.selected.set(session); }
   detach(): void { this.selected.set(''); }
+
+  // Reopen a dead session. The server resumes the prior conversation when it can;
+  // we pass the rule so it can start fresh (seeded) if there's nothing to replay.
+  reopen(row: Row): void {
+    if (this.busy()) return;
+    this.busy.set(row.session);
+    const br = row.brName ? this.rules().find(r => r.name === row.brName) ?? null : null;
+    this.file.reopenClaudeSession(row.session, { rule: br?.rule, description: br?.rationale ?? null }).subscribe({
+      next: r => {
+        this.busy.set('');
+        this.snack.open(reopenMessage(r.mode, row.session), 'OK', { duration: 5000 });
+        this.refresh();
+        this.attach(row.session);   // drop straight into the reopened tmux session
+      },
+      error: err => {
+        this.busy.set('');
+        this.snack.open(err?.error?.error ?? err?.message ?? 'Reopen failed', 'Dismiss', { duration: 6000 });
+      },
+    });
+  }
+
+  viewConversation(row: Row): void {
+    this.dialog.open(ClaudeConversationDialogComponent, {
+      data: { session: row.session, brName: row.brName },
+      width: '760px', maxWidth: '94vw', autoFocus: false,
+    });
+  }
+}
+
+// Human-readable summary of what the server did when reopening a session.
+function reopenMessage(mode: string, session: string): string {
+  switch (mode) {
+    case 'resumed': return `Resumed ${session} — continuing the previous conversation`;
+    case 'rehydrated': return `Restored ${session} from the archive and resumed`;
+    case 'fresh-seeded': return `Could not restore the previous conversation — started ${session} fresh from the rule`;
+    case 'fresh': return `Could not restore the previous conversation — started ${session} fresh`;
+    case 'already-running': return `${session} is already running`;
+    default: return `Reopened ${session}`;
+  }
 }
 
 function branchFor(session: string): string {
