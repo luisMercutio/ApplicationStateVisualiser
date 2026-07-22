@@ -6,6 +6,16 @@ server owns **Store A** (`app_state_visualiser`: connection registry + methodolo
 and opens pools to each registered target application database. `npm run dev` runs both
 the API and the Angular dev server together.
 
+## FIXED RULE: never delete the `main` or `test` worktree
+
+Agents and commands must **never** delete, remove, prune, or force-remove the **`main`**
+worktree or the **`test`** worktree — not with `git worktree remove`, not with
+`rm -rf`, not via `git worktree prune`, and not by any other means. This is an
+absolute, non-negotiable rule with no exceptions. Cleanup commands
+(`/epic-cleanup`, `/queue-run`, etc.) may only remove the dated/feature worktrees they
+themselves created; before running any worktree removal, confirm the target path is not
+the `main` or `test` worktree and abort if it is.
+
 ## Business Rules live in the database — not in files
 
 This project follows a BR-first methodology, but **this repo stores its own Business
