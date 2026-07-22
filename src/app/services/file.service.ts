@@ -67,6 +67,12 @@ export class FileService {
       `${API_BASE}/api/claude/sessions/${encodeURIComponent(session)}/reopen`, body);
   }
 
+  // Kill a running session's tmux session (the claude process exits with it).
+  killClaudeSession(session: string): Observable<{ ok: boolean; session: string }> {
+    return this.http.post<{ ok: boolean; session: string }>(
+      `${API_BASE}/api/claude/sessions/${encodeURIComponent(session)}/kill`, {});
+  }
+
   // The archived conversation for a session, reduced to prompt/answer turns only.
   getClaudeConversation(session: string):
     Observable<{ session: string; sessionId: string; messages: ConversationMessage[] }> {

@@ -500,6 +500,26 @@ app.post('/api/claude/sessions/:session/reopen', async (req, res) => {
   }
 });
 
+// Kill a running session's tmux session (the claude process exits with it). The
+// worktree and any archived transcript are left intact, so it can still be reopened.
+app.post('/api/claude/sessions/:session/kill', async (req, res) => {
+  try {
+    const session = String(req.params.session || '');
+    if (!SESSION_RE.test(session) || !session.startsWith('claude-')) {
+      return res.status(400).json({ error: `invalid session name: ${session}` });
+    }
+    // `=name` forces an exact match so we can't kill a similarly-named session.
+    await wsl(['tmux', 'kill-session', '-t', `=${session}`]).catch(e => {
+      // Already gone (no such session / no server) is success for our purposes.
+      if (/can't find|no such|no server/i.test(`${e.stderr || ''}${e.message || ''}`)) return;
+      throw e;
+    });
+    res.json({ ok: true, session });
+  } catch (err) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
 // ── Git: history + worktrees ──────────────────────────────────────────────────
 // Read-only views over the repo's OWN git, for the in-app Git page. Everything
 // runs through the same WSL git used for Claude worktrees, so the worktree paths

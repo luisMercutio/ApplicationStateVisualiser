@@ -8,6 +8,7 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 import type { Terminal as XTerm } from '@xterm/xterm';
 import type { FitAddon as XFitAddon } from '@xterm/addon-fit';
 import { FileService } from '../../../services/file.service';
+import { WorkspaceService } from '../../../services/workspace.service';
 
 type Status = 'connecting' | 'connected' | 'disconnected' | 'error';
 
@@ -65,10 +66,12 @@ type Status = 'connecting' | 'connected' | 'disconnected' | 'error';
 })
 export class TerminalComponent implements AfterViewInit, OnDestroy {
   private fileService = inject(FileService);
+  private workspace = inject(WorkspaceService);
   private host = viewChild.required<ElementRef<HTMLDivElement>>('host');
 
-  // When set (e.g. by the Claude Sessions page), attach to this session on init
-  // instead of auto-selecting the default tmux session.
+  // When set (e.g. by embedding the component with a binding), attach to this
+  // session on init instead of auto-selecting the default tmux session. When hosted
+  // as the Terminal page, the requested session arrives via WorkspaceService instead.
   initialSession = input<string>('');
 
   sessions = signal<string[]>([]);
@@ -115,8 +118,9 @@ export class TerminalComponent implements AfterViewInit, OnDestroy {
     });
 
     // Populate the picker either way; only auto-connect to the default when no
-    // explicit session was requested.
-    const initial = this.initialSession();
+    // explicit session was requested (via an input binding, or via WorkspaceService
+    // when the Claude Sessions page navigated here with a session to attach).
+    const initial = this.initialSession() || this.workspace.takeTerminalSession();
     if (initial) {
       this.refreshSessions(/* autoConnect */ false);
       this.connect(initial);

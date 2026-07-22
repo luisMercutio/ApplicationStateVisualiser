@@ -1,4 +1,4 @@
-import { Component, inject, OnInit, OnDestroy, signal } from '@angular/core';
+import { Component, inject, OnInit, OnDestroy } from '@angular/core';
 import { Store } from '@ngrx/store';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { Subscription, filter, take, distinctUntilChanged } from 'rxjs';
@@ -18,7 +18,7 @@ import { ClaudeSessionsComponent } from './components/views/claude-sessions/clau
 import { GitHistoryComponent } from './components/views/git-history/git-history.component';
 import { MethodologyEditorComponent } from './components/views/methodology-editor/methodology-editor.component';
 import { Panel, ViewType } from './models/panel.model';
-import { AppPage } from './models/app-page.model';
+import { WorkspaceService } from './services/workspace.service';
 
 function newId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -60,7 +60,9 @@ export class AppComponent implements OnInit, OnDestroy {
   private dialog = inject(MatDialog);
   private subs: Subscription[] = [];
 
-  page = signal<AppPage>('br-list');
+  // Active page lives in WorkspaceService so other views (e.g. Claude Sessions'
+  // Attach) can navigate; the toolbar still drives it via (navigate)="page.set(…)".
+  page = inject(WorkspaceService).page;
 
   ngOnInit(): void {
     // A "project" is the active database connection, chosen in the toolbar's

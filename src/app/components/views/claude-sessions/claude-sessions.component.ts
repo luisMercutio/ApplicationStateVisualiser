@@ -11,8 +11,8 @@ import { switchMap } from 'rxjs/operators';
 import { FileService } from '../../../services/file.service';
 import { ClaudeSession, AppBusinessRule } from '../../../models/app-data.model';
 import { selectAppRules } from '../../../store/app-data/app-data.selectors';
-import { TerminalComponent } from '../terminal/terminal.component';
 import { ClaudeConversationDialogComponent } from './claude-conversation-dialog.component';
+import { WorkspaceService } from '../../../services/workspace.service';
 
 // Mirror server.js brSlug so a rule name maps deterministically to its tmux
 // session (`claude-<slug>`) and branch (`claude/<slug>`). This is how the page
@@ -36,12 +36,12 @@ interface Row {
 
 // Lists the Claude sessions spawned by "Submit with Claude": each is a claude CLI
 // running in a per-BR git worktree. Running state is polled from the server (tmux);
-// BRs flagged needs-establishing whose session isn't live show as stopped. Attach
-// opens the live session in an embedded terminal.
+// BRs flagged needs-establishing whose session isn't live show as dead. Attach opens
+// the live session on the Terminal page; running sessions can also be killed.
 @Component({
   selector: 'app-claude-sessions',
   standalone: true,
-  imports: [MatIconModule, MatButtonModule, MatTooltipModule, MatMenuModule, TerminalComponent],
+  imports: [MatIconModule, MatButtonModule, MatTooltipModule, MatMenuModule],
   template: `
     <div class="cs-root">
       <div class="cs-toolbar">
@@ -58,7 +58,7 @@ interface Row {
       } @else {
         <div class="cs-list">
           @for (row of rows(); track row.session) {
-            <div class="cs-row" [class.selected]="selected() === row.session">
+            <div class="cs-row">
               <mat-icon class="dot" [class.on]="row.running" [class.off]="!row.running">fiber_manual_record</mat-icon>
               <div class="cs-body">
                 <div class="cs-br">{{ row.brName ?? row.session }}</div>
@@ -69,6 +69,10 @@ interface Row {
                 <button mat-stroked-button class="attach" (click)="attach(row.session)">
                   <mat-icon>open_in_new</mat-icon> Attach
                 </button>
+                <button mat-icon-button class="sm kill" matTooltip="Kill session"
+                        (click)="kill(row)" [disabled]="busy() === row.session">
+                  <mat-icon>{{ busy() === row.session ? 'hourglass_empty' : 'stop_circle' }}</mat-icon>
+                </button>
               } @else {
                 <button mat-stroked-button class="attach" (click)="reopen(row)" [disabled]="busy() === row.session">
                   <mat-icon>{{ busy() === row.session ? 'hourglass_empty' : 'play_arrow' }}</mat-icon> Reopen
@@ -78,6 +82,7 @@ interface Row {
               <mat-menu #menu>
                 @if (row.running) {
                   <button mat-menu-item (click)="attach(row.session)"><mat-icon>open_in_new</mat-icon> Attach</button>
+                  <button mat-menu-item (click)="kill(row)" [disabled]="busy() === row.session"><mat-icon>stop_circle</mat-icon> Kill session</button>
                 } @else {
                   <button mat-menu-item (click)="reopen(row)" [disabled]="busy() === row.session"><mat-icon>play_arrow</mat-icon> Reopen (resume)</button>
                 }
@@ -87,17 +92,6 @@ interface Row {
               </mat-menu>
             </div>
           }
-        </div>
-      }
-
-      @for (s of selectedList(); track s) {
-        <div class="cs-term">
-          <div class="cs-term-bar">
-            <span>Attached to <span class="mono">{{ s }}</span></span>
-            <span class="spacer"></span>
-            <button mat-icon-button class="sm" matTooltip="Close terminal" (click)="detach()"><mat-icon>close</mat-icon></button>
-          </div>
-          <div class="cs-term-host"><app-terminal [initialSession]="s"></app-terminal></div>
         </div>
       }
     </div>
@@ -112,7 +106,6 @@ interface Row {
     .cs-list { padding: 8px; overflow-y: auto; }
     .cs-row { display: flex; align-items: center; gap: 10px; background: white; border: 1px solid #dcdfe4;
               border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
-    .cs-row.selected { border-color: #8e24aa; box-shadow: 0 0 0 1px #8e24aa; }
     .dot { font-size: 12px; width: 12px; height: 12px; flex-shrink: 0; }
     .dot.on { color: #4caf50; } .dot.off { color: #bdbdbd; }
     .cs-body { min-width: 0; flex: 1; }
@@ -121,9 +114,7 @@ interface Row {
     .state { font-size: 10px; color: #9e9e9e; text-transform: uppercase; letter-spacing: 0.04em; }
     .state.on { color: #2e7d32; }
     .attach { font-size: 12px; } .attach mat-icon { font-size: 15px; width: 15px; height: 15px; margin-right: 2px; }
-    .cs-term { display: flex; flex-direction: column; flex: 1; min-height: 200px; border-top: 1px solid #ddd; }
-    .cs-term-bar { display: flex; align-items: center; gap: 8px; padding: 3px 8px; background: #252526; color: #ccc; font-size: 12px; }
-    .cs-term-host { flex: 1; min-height: 0; }
+    .kill { color: #c62828; }
   `],
 })
 export class ClaudeSessionsComponent implements OnInit, OnDestroy {
@@ -131,12 +122,12 @@ export class ClaudeSessionsComponent implements OnInit, OnDestroy {
   private file = inject(FileService);
   private dialog = inject(MatDialog);
   private snack = inject(MatSnackBar);
+  private workspace = inject(WorkspaceService);
   private subs: Subscription[] = [];
 
   private rules = signal<AppBusinessRule[]>([]);
   private sessions = signal<ClaudeSession[]>([]);
-  selected = signal<string>('');
-  busy = signal<string>('');   // session currently being reopened
+  busy = signal<string>('');   // session currently being reopened or killed
   error = signal<string | null>(null);
 
   rows = computed<Row[]>(() => {
@@ -171,8 +162,6 @@ export class ClaudeSessionsComponent implements OnInit, OnDestroy {
   });
 
   runningCount = computed(() => this.rows().filter(r => r.running).length);
-  // Single-item list so @for re-creates the terminal when the target changes.
-  selectedList = computed<string[]>(() => (this.selected() ? [this.selected()] : []));
 
   ngOnInit(): void {
     this.subs.push(this.store.select(selectAppRules).subscribe(r => this.rules.set(r)));
@@ -194,8 +183,27 @@ export class ClaudeSessionsComponent implements OnInit, OnDestroy {
     });
   }
 
-  attach(session: string): void { this.selected.set(session); }
-  detach(): void { this.selected.set(''); }
+  // Open the Terminal page attached to this session (handoff via WorkspaceService).
+  attach(session: string): void { this.workspace.openTerminal(session); }
+
+  // Kill a running session's tmux session. The worktree and archived conversation
+  // survive, so it can be reopened later; confirm first to avoid losing a live turn.
+  kill(row: Row): void {
+    if (this.busy()) return;
+    if (!confirm(`Kill ${row.session}? Its tmux session and Claude process will exit. The worktree and conversation are kept, so you can reopen it later.`)) return;
+    this.busy.set(row.session);
+    this.file.killClaudeSession(row.session).subscribe({
+      next: () => {
+        this.busy.set('');
+        this.snack.open(`Killed ${row.session}`, 'OK', { duration: 4000 });
+        this.refresh();
+      },
+      error: err => {
+        this.busy.set('');
+        this.snack.open(err?.error?.error ?? err?.message ?? 'Kill failed', 'Dismiss', { duration: 6000 });
+      },
+    });
+  }
 
   // Reopen a dead session. The server resumes the prior conversation when it can;
   // we pass the rule so it can start fresh (seeded) if there's nothing to replay.
