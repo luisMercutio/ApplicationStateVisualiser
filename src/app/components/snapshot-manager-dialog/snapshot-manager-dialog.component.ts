@@ -17,8 +17,8 @@ import { selectEpics, selectAppRules } from '../../store/app-data/app-data.selec
 import { SnapshotDiffDialogComponent, SnapshotDiffDialogData } from '../snapshot-diff-dialog/snapshot-diff-dialog.component';
 
 export interface SnapshotManagerDialogData {
-  connectionId: string;
-  connectionName: string;
+  applicationId: string;
+  applicationName: string;
 }
 
 // Manage point-in-time snapshots of the whole Epic + Business Rule set for one
@@ -32,7 +32,7 @@ export interface SnapshotManagerDialogData {
   standalone: true,
   imports: [MatDialogModule, MatButtonModule, MatIconModule, MatFormFieldModule, MatInputModule, MatTooltipModule, FormsModule],
   template: `
-    <h2 mat-dialog-title><mat-icon class="ttl-ic">photo_camera</mat-icon> Snapshots · {{ data.connectionName }}</h2>
+    <h2 mat-dialog-title><mat-icon class="ttl-ic">photo_camera</mat-icon> Snapshots · {{ data.applicationName }}</h2>
     <mat-dialog-content>
       <p class="hint">
         A snapshot freezes the current Epics and Business Rules so you can reorder freely and
@@ -108,7 +108,7 @@ export class SnapshotManagerDialogComponent implements OnInit {
 
   private reload(): void {
     this.loading.set(true);
-    this.db.listSnapshots(this.data.connectionId).subscribe({
+    this.db.listSnapshots(this.data.applicationId).subscribe({
       next: (r) => { this.snapshots.set(r.snapshots); this.loading.set(false); },
       error: (e) => { this.loading.set(false); this.fail(e); },
     });
@@ -117,7 +117,7 @@ export class SnapshotManagerDialogComponent implements OnInit {
   create(): void {
     const label = this.label.trim() || 'Snapshot';
     this.busy.set(true);
-    this.db.createSnapshot(this.data.connectionId, { label }).subscribe({
+    this.db.createSnapshot(this.data.applicationId, { label }).subscribe({
       next: (snap) => {
         this.snapshots.set([snap, ...this.snapshots()]);
         this.label = '';
@@ -131,7 +131,7 @@ export class SnapshotManagerDialogComponent implements OnInit {
   remove(s: BrSnapshotMeta): void {
     if (!confirm(`Delete snapshot "${s.label}"? This cannot be undone.`)) return;
     this.busy.set(true);
-    this.db.deleteSnapshot(this.data.connectionId, s.id).subscribe({
+    this.db.deleteSnapshot(this.data.applicationId, s.id).subscribe({
       next: () => { this.snapshots.set(this.snapshots().filter((x) => x.id !== s.id)); this.busy.set(false); },
       error: (e) => { this.busy.set(false); this.fail(e); },
     });
@@ -142,7 +142,7 @@ export class SnapshotManagerDialogComponent implements OnInit {
   openDiff(s: BrSnapshotMeta): void {
     this.busy.set(true);
     forkJoin({
-      snapshot: this.db.getSnapshot(this.data.connectionId, s.id),
+      snapshot: this.db.getSnapshot(this.data.applicationId, s.id),
       epics: this.store.select(selectEpics).pipe(take(1)),
       rules: this.store.select(selectAppRules).pipe(take(1)),
     }).subscribe({

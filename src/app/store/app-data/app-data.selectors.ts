@@ -9,7 +9,7 @@ export const {
   selectNotes,
   selectLoading: selectAppDataLoading,
   selectError: selectAppDataError,
-  selectConnectionId: selectAppDataConnectionId,
+  selectApplicationId: selectAppDataApplicationId,
 } = appDataFeature;
 
 /** Count of agent-info entries per business_rule id. */

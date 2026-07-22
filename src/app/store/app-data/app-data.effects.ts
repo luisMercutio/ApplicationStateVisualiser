@@ -5,8 +5,8 @@ import { MatSnackBar } from '@angular/material/snack-bar';
 import { switchMap, mergeMap, map, catchError, tap, withLatestFrom } from 'rxjs/operators';
 import { forkJoin, of } from 'rxjs';
 import { AppDataActions } from './app-data.actions';
-import { ConnectionsActions } from '../connections/connections.actions';
-import { selectActiveId } from '../connections/connections.selectors';
+import { ApplicationsActions } from '../applications/applications.actions';
+import { selectActiveId } from '../applications/applications.selectors';
 import { DbService } from '../../services/db.service';
 import { FileService } from '../../services/file.service';
 import { AppBusinessRule } from '../../models/app-data.model';
@@ -19,26 +19,26 @@ export class AppDataEffects {
   private file = inject(FileService);
   private snackBar = inject(MatSnackBar);
 
-  // When the active connection changes, (re)load its epics + business rules.
+  // When the active application changes, (re)load its epics + business rules.
   reloadOnActiveChange$ = createEffect(() =>
     this.actions$.pipe(
-      ofType(ConnectionsActions.setActiveSuccess, ConnectionsActions.loadConnectionsSuccess),
+      ofType(ApplicationsActions.setActiveSuccess, ApplicationsActions.loadApplicationsSuccess),
       withLatestFrom(this.store.select(selectActiveId)),
-      map(([, activeId]) => (activeId ? AppDataActions.load({ connectionId: activeId }) : AppDataActions.clear())),
+      map(([, activeId]) => (activeId ? AppDataActions.load({ applicationId: activeId }) : AppDataActions.clear())),
     ),
   );
 
   load$ = createEffect(() =>
     this.actions$.pipe(
       ofType(AppDataActions.load),
-      switchMap(({ connectionId }) =>
+      switchMap(({ applicationId }) =>
         forkJoin({
-          epics: this.db.listEpics(connectionId).pipe(map(r => r.epics)),
-          rules: this.db.listBusinessRules(connectionId).pipe(map(r => r.rules)),
-          agentInfo: this.db.listAgentInfo(connectionId).pipe(map(r => r.info)),
-          notes: this.db.listNotes(connectionId).pipe(map(r => r.notes)),
+          epics: this.db.listEpics(applicationId).pipe(map(r => r.epics)),
+          rules: this.db.listBusinessRules(applicationId).pipe(map(r => r.rules)),
+          agentInfo: this.db.listAgentInfo(applicationId).pipe(map(r => r.info)),
+          notes: this.db.listNotes(applicationId).pipe(map(r => r.notes)),
         }).pipe(
-          map(({ epics, rules, agentInfo, notes }) => AppDataActions.loadSuccess({ connectionId, epics, rules, agentInfo, notes })),
+          map(({ epics, rules, agentInfo, notes }) => AppDataActions.loadSuccess({ applicationId, epics, rules, agentInfo, notes })),
           catchError((err) => of(AppDataActions.loadFailure({ error: errMsg(err) }))),
         ),
       ),
@@ -48,8 +48,8 @@ export class AppDataEffects {
   createEpic$ = createEffect(() =>
     this.actions$.pipe(
       ofType(AppDataActions.createEpic),
-      mergeMap(({ connectionId, input }) =>
-        this.db.createEpic(connectionId, input).pipe(
+      mergeMap(({ applicationId, input }) =>
+        this.db.createEpic(applicationId, input).pipe(
           map((epic) => AppDataActions.createEpicSuccess({ epic })),
           catchError((err) => of(AppDataActions.mutationFailure({ error: errMsg(err) }))),
         ),
@@ -60,8 +60,8 @@ export class AppDataEffects {
   updateEpic$ = createEffect(() =>
     this.actions$.pipe(
       ofType(AppDataActions.updateEpic),
-      mergeMap(({ connectionId, epicId, input }) =>
-        this.db.updateEpic(connectionId, epicId, input).pipe(
+      mergeMap(({ applicationId, epicId, input }) =>
+        this.db.updateEpic(applicationId, epicId, input).pipe(
           map((epic) => AppDataActions.updateEpicSuccess({ epic })),
           catchError((err) => of(AppDataActions.mutationFailure({ error: errMsg(err) }))),
         ),
@@ -72,8 +72,8 @@ export class AppDataEffects {
   deleteEpic$ = createEffect(() =>
     this.actions$.pipe(
       ofType(AppDataActions.deleteEpic),
-      mergeMap(({ connectionId, epicId }) =>
-        this.db.deleteEpic(connectionId, epicId).pipe(
+      mergeMap(({ applicationId, epicId }) =>
+        this.db.deleteEpic(applicationId, epicId).pipe(
           map(() => AppDataActions.deleteEpicSuccess({ epicId })),
           catchError((err) => of(AppDataActions.mutationFailure({ error: errMsg(err) }))),
         ),
@@ -84,8 +84,8 @@ export class AppDataEffects {
   createRule$ = createEffect(() =>
     this.actions$.pipe(
       ofType(AppDataActions.createRule),
-      mergeMap(({ connectionId, input }) =>
-        this.db.createBusinessRule(connectionId, input).pipe(
+      mergeMap(({ applicationId, input }) =>
+        this.db.createBusinessRule(applicationId, input).pipe(
           map((rule) => AppDataActions.createRuleSuccess({ rule })),
           catchError((err) => of(AppDataActions.mutationFailure({ error: errMsg(err) }))),
         ),
@@ -96,8 +96,8 @@ export class AppDataEffects {
   updateRule$ = createEffect(() =>
     this.actions$.pipe(
       ofType(AppDataActions.updateRule),
-      mergeMap(({ connectionId, ruleId, input }) =>
-        this.db.updateBusinessRule(connectionId, ruleId, input).pipe(
+      mergeMap(({ applicationId, ruleId, input }) =>
+        this.db.updateBusinessRule(applicationId, ruleId, input).pipe(
           map((rule) => AppDataActions.updateRuleSuccess({ rule })),
           catchError((err) => of(AppDataActions.mutationFailure({ error: errMsg(err) }))),
         ),
@@ -108,8 +108,8 @@ export class AppDataEffects {
   deleteRule$ = createEffect(() =>
     this.actions$.pipe(
       ofType(AppDataActions.deleteRule),
-      mergeMap(({ connectionId, ruleId }) =>
-        this.db.deleteBusinessRule(connectionId, ruleId).pipe(
+      mergeMap(({ applicationId, ruleId }) =>
+        this.db.deleteBusinessRule(applicationId, ruleId).pipe(
           map(() => AppDataActions.deleteRuleSuccess({ ruleId })),
           catchError((err) => of(AppDataActions.mutationFailure({ error: errMsg(err) }))),
         ),
@@ -125,11 +125,11 @@ export class AppDataEffects {
   submitToClaude$ = createEffect(() =>
     this.actions$.pipe(
       ofType(AppDataActions.submitToClaude),
-      mergeMap(({ connectionId, ruleId, input }) => {
+      mergeMap(({ applicationId, ruleId, input }) => {
         const withFlag = { ...input, needsToBeEstablished: true };
         const save$ = ruleId
-          ? this.db.updateBusinessRule(connectionId, ruleId, withFlag).pipe(map(rule => ({ rule, existing: true })))
-          : this.db.createBusinessRule(connectionId, withFlag).pipe(map(rule => ({ rule, existing: false })));
+          ? this.db.updateBusinessRule(applicationId, ruleId, withFlag).pipe(map(rule => ({ rule, existing: true })))
+          : this.db.createBusinessRule(applicationId, withFlag).pipe(map(rule => ({ rule, existing: false })));
         return save$.pipe(
           switchMap(({ rule, existing }) => {
             const saved = existing
@@ -158,10 +158,10 @@ export class AppDataEffects {
   moveRuleToNewEpic$ = createEffect(() =>
     this.actions$.pipe(
       ofType(AppDataActions.moveRuleToNewEpic),
-      mergeMap(({ connectionId, ruleId, input, epicTitle }) =>
-        this.db.createEpic(connectionId, { title: epicTitle }).pipe(
+      mergeMap(({ applicationId, ruleId, input, epicTitle }) =>
+        this.db.createEpic(applicationId, { title: epicTitle }).pipe(
           switchMap((epic) =>
-            this.db.updateBusinessRule(connectionId, ruleId, { ...input, epicId: epic.id }).pipe(
+            this.db.updateBusinessRule(applicationId, ruleId, { ...input, epicId: epic.id }).pipe(
               map((rule) => AppDataActions.moveRuleToNewEpicSuccess({ epic, rule })),
             ),
           ),
@@ -174,8 +174,8 @@ export class AppDataEffects {
   createNote$ = createEffect(() =>
     this.actions$.pipe(
       ofType(AppDataActions.createNote),
-      mergeMap(({ connectionId, input }) =>
-        this.db.createNote(connectionId, input).pipe(
+      mergeMap(({ applicationId, input }) =>
+        this.db.createNote(applicationId, input).pipe(
           map((note) => AppDataActions.createNoteSuccess({ note })),
           catchError((err) => of(AppDataActions.mutationFailure({ error: errMsg(err) }))),
         ),
@@ -186,8 +186,8 @@ export class AppDataEffects {
   updateNote$ = createEffect(() =>
     this.actions$.pipe(
       ofType(AppDataActions.updateNote),
-      mergeMap(({ connectionId, noteId, input }) =>
-        this.db.updateNote(connectionId, noteId, input).pipe(
+      mergeMap(({ applicationId, noteId, input }) =>
+        this.db.updateNote(applicationId, noteId, input).pipe(
           map((note) => AppDataActions.updateNoteSuccess({ note })),
           catchError((err) => of(AppDataActions.mutationFailure({ error: errMsg(err) }))),
         ),
@@ -198,8 +198,8 @@ export class AppDataEffects {
   deleteNote$ = createEffect(() =>
     this.actions$.pipe(
       ofType(AppDataActions.deleteNote),
-      mergeMap(({ connectionId, noteId }) =>
-        this.db.deleteNote(connectionId, noteId).pipe(
+      mergeMap(({ applicationId, noteId }) =>
+        this.db.deleteNote(applicationId, noteId).pipe(
           map(() => AppDataActions.deleteNoteSuccess({ noteId })),
           catchError((err) => of(AppDataActions.mutationFailure({ error: errMsg(err) }))),
         ),
@@ -210,8 +210,8 @@ export class AppDataEffects {
   createAgentInfo$ = createEffect(() =>
     this.actions$.pipe(
       ofType(AppDataActions.createAgentInfo),
-      mergeMap(({ connectionId, input }) =>
-        this.db.createAgentInfo(connectionId, input).pipe(
+      mergeMap(({ applicationId, input }) =>
+        this.db.createAgentInfo(applicationId, input).pipe(
           map((info) => AppDataActions.createAgentInfoSuccess({ info })),
           catchError((err) => of(AppDataActions.mutationFailure({ error: errMsg(err) }))),
         ),
@@ -222,8 +222,8 @@ export class AppDataEffects {
   updateAgentInfo$ = createEffect(() =>
     this.actions$.pipe(
       ofType(AppDataActions.updateAgentInfo),
-      mergeMap(({ connectionId, infoId, input }) =>
-        this.db.updateAgentInfo(connectionId, infoId, input).pipe(
+      mergeMap(({ applicationId, infoId, input }) =>
+        this.db.updateAgentInfo(applicationId, infoId, input).pipe(
           map((info) => AppDataActions.updateAgentInfoSuccess({ info })),
           catchError((err) => of(AppDataActions.mutationFailure({ error: errMsg(err) }))),
         ),
@@ -234,8 +234,8 @@ export class AppDataEffects {
   deleteAgentInfo$ = createEffect(() =>
     this.actions$.pipe(
       ofType(AppDataActions.deleteAgentInfo),
-      mergeMap(({ connectionId, infoId }) =>
-        this.db.deleteAgentInfo(connectionId, infoId).pipe(
+      mergeMap(({ applicationId, infoId }) =>
+        this.db.deleteAgentInfo(applicationId, infoId).pipe(
           map(() => AppDataActions.deleteAgentInfoSuccess({ infoId })),
           catchError((err) => of(AppDataActions.mutationFailure({ error: errMsg(err) }))),
         ),

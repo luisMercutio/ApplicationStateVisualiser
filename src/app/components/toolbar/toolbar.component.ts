@@ -14,9 +14,8 @@ import { toSignal } from '@angular/core/rxjs-interop';
 import { LayoutsActions } from '../../store/layouts/layouts.actions';
 import { selectLayoutNames, selectActiveLayout, selectLayoutSaving } from '../../store/layouts/layouts.selectors';
 import { SaveLayoutDialogComponent } from '../save-layout-dialog/save-layout-dialog.component';
-import { DbManagerDialogComponent } from '../db-manager-dialog/db-manager-dialog.component';
-import { DbBrowserDialogComponent } from '../db-browser-dialog/db-browser-dialog.component';
-import { selectActiveConnection } from '../../store/connections/connections.selectors';
+import { ApplicationsManagerDialogComponent } from '../applications-manager-dialog/applications-manager-dialog.component';
+import { selectActiveApplication } from '../../store/applications/applications.selectors';
 import { AppPage, NAV_PAGES } from '../../models/app-page.model';
 import { filter } from 'rxjs';
 
@@ -69,11 +68,10 @@ import { filter } from 'rxjs';
         <span class="divider desktop-only"></span>
       }
 
-      <!-- Application State Manager: browse the active database's state — desktop icon -->
-      <button mat-icon-button class="desktop-only" matTooltip="Application State Manager"
-              [disabled]="!activeConnection()" (click)="browse()">
-        <mat-icon>table_view</mat-icon>
-      </button>
+      <!-- Active application name — desktop label -->
+      @if (activeApplication(); as app) {
+        <span class="active-app desktop-only" matTooltip="Active application">{{ app.name }}</span>
+      }
 
       <!-- Claude (Methodology editor) — desktop icon -->
       <button mat-icon-button class="desktop-only" matTooltip="Claude" [class.active-gear]="page() === 'settings'"
@@ -81,8 +79,8 @@ import { filter } from 'rxjs';
         <mat-icon>smart_toy</mat-icon>
       </button>
 
-      <!-- Database connections — desktop icon (opens the manager dialog) -->
-      <button mat-icon-button class="desktop-only" matTooltip="Database connections" (click)="openDbManager()">
+      <!-- Applications — desktop icon (opens the manager dialog) -->
+      <button mat-icon-button class="desktop-only" matTooltip="Applications" (click)="openApplicationsManager()">
         <mat-icon>settings</mat-icon>
       </button>
 
@@ -120,14 +118,11 @@ import { filter } from 'rxjs';
           }
           <mat-divider></mat-divider>
         }
-        <button mat-menu-item [disabled]="!activeConnection()" (click)="browse()">
-          <mat-icon>table_view</mat-icon><span>Application State Manager</span>
-        </button>
         <button mat-menu-item [class.active-item]="page() === 'settings'" (click)="navigate.emit('settings')">
           <mat-icon>smart_toy</mat-icon><span>Claude</span>
         </button>
-        <button mat-menu-item (click)="openDbManager()">
-          <mat-icon>settings</mat-icon><span>Database connections</span>
+        <button mat-menu-item (click)="openApplicationsManager()">
+          <mat-icon>settings</mat-icon><span>Applications</span>
         </button>
       </mat-menu>
     </mat-toolbar>
@@ -147,6 +142,8 @@ import { filter } from 'rxjs';
     .divider { width: 1px; height: 24px; background: rgba(255,255,255,0.3); margin: 0 4px; }
     .add-btn { color: white; border-color: rgba(255,255,255,0.6); }
     .active-gear { color: #ffeb3b; }
+    .active-app { font-size: 13px; font-weight: 500; white-space: nowrap; margin: 0 6px;
+                  max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
 
     /* Responsive: below 768px the inline controls collapse into a menu. */
     .mobile-only { display: none; }
@@ -170,7 +167,7 @@ export class ToolbarComponent {
   layoutNames = toSignal(this.store.select(selectLayoutNames), { initialValue: [] as string[] });
   activeLayout = toSignal(this.store.select(selectActiveLayout), { initialValue: null });
   layoutSaving = toSignal(this.store.select(selectLayoutSaving), { initialValue: false });
-  activeConnection = toSignal(this.store.select(selectActiveConnection), { initialValue: null });
+  activeApplication = toSignal(this.store.select(selectActiveApplication), { initialValue: null });
 
   applyLayout(name: string): void {
     if (name) this.store.dispatch(LayoutsActions.applyLayout({ name }));
@@ -187,12 +184,7 @@ export class ToolbarComponent {
     if (name) this.store.dispatch(LayoutsActions.deleteLayout({ name }));
   }
 
-  openDbManager(): void {
-    this.dialog.open(DbManagerDialogComponent);
-  }
-
-  browse(): void {
-    const conn = this.activeConnection();
-    if (conn) this.dialog.open(DbBrowserDialogComponent, { data: conn });
+  openApplicationsManager(): void {
+    this.dialog.open(ApplicationsManagerDialogComponent);
   }
 }
