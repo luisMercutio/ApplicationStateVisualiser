@@ -50,3 +50,36 @@ html, body {
   gap: 8px;
   text-align: center;
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Mobile dialog fixes (≤768px)
+
+   Every form dialog declares a desktop min-width on its content (420–560px).
+   Material caps the dialog pane at 80vw, so on a phone that min-width exceeds
+   the pane and the content is clipped / forces horizontal scrolling — this is
+   why overlays like "Agent info" render poorly on mobile. Below the app's
+   768px breakpoint we widen the pane, drop the min-widths so content reflows
+   to the screen, and collapse the shared two-column form grids to one column.
+   These target Material's global (non view-encapsulated) classes, so !important
+   is needed to beat the components' emulated-encapsulation rules. ────────── */
+@media (max-width: 768px) {
+  .mat-mdc-dialog-panel {
+    max-width: 96vw !important;
+    min-width: 0 !important;
+  }
+
+  .mat-mdc-dialog-container .mat-mdc-dialog-content {
+    min-width: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: 70vh;
+    padding-left: 16px !important;
+    padding-right: 16px !important;
+    box-sizing: border-box;
+  }
+
+  /* Shared two-column form layout (BR / Epic / DB-connection dialogs) stacks. */
+  .form-grid {
+    grid-template-columns: 1fr !important;
+  }
+}

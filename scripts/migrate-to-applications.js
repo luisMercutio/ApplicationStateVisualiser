@@ -71,17 +71,18 @@ async function readAll(pool, table) {
   }
 }
 
-// Some target DBs were provisioned by an earlier, divergent schema line where a
-// Business Rule's PK was `creation_index` (not `id`), its ordering was the integer
-// `execution_order` (not the Dewey string `seq`), and it carried an extra
-// `needs_to_be_established` flag. Normalise every source row to the canonical
-// shape so both schema generations migrate cleanly.
+// Business Rules use `creation_index` as their identity and the integer
+// `execution_order` for position. An even older schema line keyed them by `id`
+// with a Dewey `seq` string; normalise either source shape to the current one so
+// both migrate cleanly. `execution_order` is backfilled from a numeric `seq` when
+// only the old ordering is present (nulls stay null → sorted to the end).
 function normaliseBrRow(r) {
+  const seqNum = r.seq == null || !Number.isFinite(Number(r.seq)) ? null : Math.trunc(Number(r.seq));
   return {
-    id: r.id ?? r.creation_index,
+    creation_index: r.creation_index ?? r.id,
     name: r.name,
     epic_id: r.epic_id ?? null,
-    seq: r.seq ?? (r.execution_order == null ? null : String(r.execution_order)),
+    execution_order: r.execution_order ?? seqNum,
     rule: r.rule,
     rationale: r.rationale ?? null,
     category: r.category ?? null,
@@ -90,6 +91,7 @@ function normaliseBrRow(r) {
     depends_on: r.depends_on ?? null,
     touches: r.touches ?? null,
     delta: r.delta ?? null,
+    needs_to_be_established: r.needs_to_be_established ?? 0,
     created_at: r.created_at ?? null,
     updated_at: r.updated_at ?? null,
   };
@@ -163,11 +165,11 @@ async function main() {
       for (const b of rules) {
         await link.query(
           `INSERT INTO business_rules
-             (id, application_id, name, epic_id, seq, rule, rationale, category,
-              features, modifies_features, depends_on, touches, delta, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [b.id, appId, b.name, b.epic_id, b.seq, b.rule, b.rationale, b.category,
-            b.features, b.modifies_features, b.depends_on, b.touches, b.delta, b.created_at, b.updated_at],
+             (creation_index, application_id, name, epic_id, execution_order, rule, rationale, category,
+              features, modifies_features, depends_on, touches, delta, needs_to_be_established, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [b.creation_index, appId, b.name, b.epic_id, b.execution_order, b.rule, b.rationale, b.category,
+            b.features, b.modifies_features, b.depends_on, b.touches, b.delta, b.needs_to_be_established, b.created_at, b.updated_at],
         );
       }
       for (const a of agentInfo) {

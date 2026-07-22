@@ -6,10 +6,10 @@ import { MatDialog } from '@angular/material/dialog';
 import { Store } from '@ngrx/store';
 import { Subscription } from 'rxjs';
 import { Note, NoteInput } from '../../../models/note.model';
-import { Application } from '../../../models/application.model';
+import { DbConnection } from '../../../models/db-connection.model';
 import { AppDataActions } from '../../../store/app-data/app-data.actions';
 import { selectNotes, selectAppDataLoading, selectAppDataError } from '../../../store/app-data/app-data.selectors';
-import { selectActiveApplication } from '../../../store/applications/applications.selectors';
+import { selectActiveConnection } from '../../../store/connections/connections.selectors';
 import { NoteFormDialogComponent } from '../../note-form-dialog/note-form-dialog.component';
 
 /**
@@ -36,7 +36,7 @@ import { NoteFormDialogComponent } from '../../note-form-dialog/note-form-dialog
       </div>
 
       @if (!active()) {
-        <div class="msg">Select an application in the toolbar to see its notes.</div>
+        <div class="msg">Select an application connection in the toolbar to see its notes.</div>
       } @else if (loading()) {
         <div class="msg">Loading notes…</div>
       } @else if (error()) {
@@ -56,7 +56,9 @@ import { NoteFormDialogComponent } from '../../note-form-dialog/note-form-dialog
               @if (n.description) { <div class="nc-desc">{{ n.description }}</div> }
               @if (n.relatedBrs.length) {
                 <div class="nc-brs">
-                  @for (ref of n.relatedBrs; track ref) { <span class="br-chip">{{ ref }}</span> }
+                  @for (ref of n.relatedBrs; track ref) {
+                    <span class="br-chip" matTooltip="Assigned to business rule {{ ref }}"><mat-icon>sell</mat-icon>{{ ref }}</span>
+                  }
                 </div>
               }
             </div>
@@ -84,8 +86,10 @@ import { NoteFormDialogComponent } from '../../note-form-dialog/note-form-dialog
     .del:hover { color: #c62828; }
     .nc-desc { font-size: 12px; color: #444; line-height: 1.4; margin-top: 4px; white-space: pre-wrap; }
     .nc-brs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
-    .br-chip { font-size: 10px; font-family: monospace; background: #eef1fb; color: #3f51b5; border: 1px solid #d6ddf5;
+    .br-chip { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-family: monospace;
+               background: #eef1fb; color: #3f51b5; border: 1px solid #d6ddf5;
                padding: 1px 7px; border-radius: 10px; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .br-chip mat-icon { font-size: 12px; width: 12px; height: 12px; }
   `],
 })
 export class NotesListComponent implements OnInit, OnDestroy {
@@ -93,14 +97,14 @@ export class NotesListComponent implements OnInit, OnDestroy {
   private dialog = inject(MatDialog);
   private subs: Subscription[] = [];
 
-  active = signal<Application | null>(null);
+  active = signal<DbConnection | null>(null);
   loading = signal(false);
   error = signal<string | null>(null);
   notes = signal<Note[]>([]);
 
   ngOnInit(): void {
     this.subs.push(
-      this.store.select(selectActiveApplication).subscribe((a) => this.active.set(a)),
+      this.store.select(selectActiveConnection).subscribe((a) => this.active.set(a)),
       this.store.select(selectAppDataLoading).subscribe((v) => this.loading.set(v)),
       this.store.select(selectAppDataError).subscribe((v) => this.error.set(v)),
       this.store.select(selectNotes).subscribe((n) => this.notes.set(n)),
@@ -109,31 +113,31 @@ export class NotesListComponent implements OnInit, OnDestroy {
 
   ngOnDestroy(): void { this.subs.forEach((s) => s.unsubscribe()); }
 
-  private appId(): string | null { return this.active()?.id ?? null; }
+  private connId(): string | null { return this.active()?.id ?? null; }
 
   addNote(): void {
     this.dialog.open(NoteFormDialogComponent).afterClosed().subscribe((input: NoteInput | undefined) => {
-      const id = this.appId();
-      if (input && id) this.store.dispatch(AppDataActions.createNote({ applicationId: id, input }));
+      const id = this.connId();
+      if (input && id) this.store.dispatch(AppDataActions.createNote({ connectionId: id, input }));
     });
   }
 
   editNote(note: Note): void {
-    this.dialog.open(NoteFormDialogComponent, { data: note }).afterClosed().subscribe((input: NoteInput | undefined) => {
-      const id = this.appId();
-      if (input && id) this.store.dispatch(AppDataActions.updateNote({ applicationId: id, noteId: note.id, input }));
+    this.dialog.open(NoteFormDialogComponent, { data: { note } }).afterClosed().subscribe((input: NoteInput | undefined) => {
+      const id = this.connId();
+      if (input && id) this.store.dispatch(AppDataActions.updateNote({ connectionId: id, noteId: note.id, input }));
     });
   }
 
   deleteNote(note: Note): void {
-    const id = this.appId();
+    const id = this.connId();
     if (id && confirm(`Delete note "${note.title}"?`)) {
-      this.store.dispatch(AppDataActions.deleteNote({ applicationId: id, noteId: note.id }));
+      this.store.dispatch(AppDataActions.deleteNote({ connectionId: id, noteId: note.id }));
     }
   }
 
   reload(): void {
-    const id = this.appId();
-    if (id) this.store.dispatch(AppDataActions.load({ applicationId: id }));
+    const id = this.connId();
+    if (id) this.store.dispatch(AppDataActions.load({ connectionId: id }));
   }
 }

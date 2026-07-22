@@ -1,8 +1,10 @@
 import { Injectable, inject } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
-import { Application, ApplicationInput, DbStoreStatus } from '../models/application.model';
-import { AppBusinessRule, AppBusinessRuleInput, BrAgentInfo, BrAgentInfoInput, Epic, EpicInput } from '../models/app-data.model';
+import {
+  DbConnection, DbConnectionInput, DbPreview, DbStoreStatus, DbTableInfo, DbTestResult,
+} from '../models/db-connection.model';
+import { AppBusinessRule, AppBusinessRuleInput, BrAgentInfo, BrAgentInfoInput, BrSnapshot, BrSnapshotInput, BrSnapshotMeta, Epic, EpicInput } from '../models/app-data.model';
 import { Note, NoteInput } from '../models/note.model';
 import { MethodologyFile, MethodologyFileMeta, MethodologyKind } from '../models/methodology-file.model';
 
@@ -23,64 +25,83 @@ export class DbService {
     return this.http.get<DbStoreStatus>(`${API_BASE}/api/db/status`);
   }
 
-  // ── Applications (rows in the single store DB) ──
-  listApplications(): Observable<{ applications: Application[] }> {
-    return this.http.get<{ applications: Application[] }>(`${API_BASE}/api/applications`);
+  // ── Connection profiles (Store A) ──
+  list(): Observable<DbConnection[]> {
+    return this.http.get<DbConnection[]>(`${API_BASE}/api/db/connections`);
   }
 
-  createApplication(input: ApplicationInput): Observable<Application> {
-    return this.http.post<Application>(`${API_BASE}/api/applications`, input);
+  create(input: DbConnectionInput): Observable<DbConnection> {
+    return this.http.post<DbConnection>(`${API_BASE}/api/db/connections`, input);
   }
 
-  updateApplication(appId: string, input: ApplicationInput): Observable<Application> {
-    return this.http.put<Application>(`${API_BASE}/api/applications/${appId}`, input);
+  update(id: string, input: DbConnectionInput): Observable<DbConnection> {
+    return this.http.put<DbConnection>(`${API_BASE}/api/db/connections/${id}`, input);
   }
 
-  deleteApplication(appId: string): Observable<{ ok: boolean }> {
-    return this.http.delete<{ ok: boolean }>(`${API_BASE}/api/applications/${appId}`);
+  remove(id: string): Observable<{ ok: boolean }> {
+    return this.http.delete<{ ok: boolean }>(`${API_BASE}/api/db/connections/${id}`);
   }
 
-  // ── Active selection (which application drives data retrieval) ──
+  testParams(input: DbConnectionInput): Observable<DbTestResult> {
+    return this.http.post<DbTestResult>(`${API_BASE}/api/db/connections/test`, input);
+  }
+
+  testExisting(id: string): Observable<DbTestResult> {
+    return this.http.post<DbTestResult>(`${API_BASE}/api/db/connections/${id}/test`, {});
+  }
+
+  // ── Active selection (which target drives data retrieval) ──
   getActive(): Observable<{ activeId: string | null }> {
-    return this.http.get<{ activeId: string | null }>(`${API_BASE}/api/applications/active`);
+    return this.http.get<{ activeId: string | null }>(`${API_BASE}/api/db/active`);
   }
 
   setActive(id: string | null): Observable<{ activeId: string | null }> {
-    return this.http.put<{ activeId: string | null }>(`${API_BASE}/api/applications/active`, { id });
+    return this.http.put<{ activeId: string | null }>(`${API_BASE}/api/db/active`, { id });
   }
 
-  // ── Epics (scoped to the active application) ──
-  listEpics(appId: string): Observable<{ epics: Epic[] }> {
-    return this.http.get<{ epics: Epic[] }>(`${API_BASE}/api/applications/${appId}/epics`);
+  // ── State retrieval / browse ──
+  listTables(id: string): Observable<{ tables: DbTableInfo[] }> {
+    return this.http.get<{ tables: DbTableInfo[] }>(`${API_BASE}/api/db/connections/${id}/tables`);
   }
 
-  createEpic(appId: string, input: EpicInput): Observable<Epic> {
-    return this.http.post<Epic>(`${API_BASE}/api/applications/${appId}/epics`, input);
+  previewTable(id: string, table: string, limit = 50): Observable<DbPreview> {
+    const params = new HttpParams().set('limit', String(limit));
+    return this.http.get<DbPreview>(
+      `${API_BASE}/api/db/connections/${id}/tables/${encodeURIComponent(table)}/rows`, { params });
   }
 
-  updateEpic(appId: string, epicId: string, input: EpicInput): Observable<Epic> {
-    return this.http.put<Epic>(`${API_BASE}/api/applications/${appId}/epics/${epicId}`, input);
+  // ── Epics (in the active connection's application DB) ──
+  listEpics(id: string): Observable<{ epics: Epic[] }> {
+    return this.http.get<{ epics: Epic[] }>(`${API_BASE}/api/db/connections/${id}/epics`);
   }
 
-  deleteEpic(appId: string, epicId: string): Observable<{ ok: boolean }> {
-    return this.http.delete<{ ok: boolean }>(`${API_BASE}/api/applications/${appId}/epics/${epicId}`);
+  createEpic(id: string, input: EpicInput): Observable<Epic> {
+    return this.http.post<Epic>(`${API_BASE}/api/db/connections/${id}/epics`, input);
   }
 
-  // ── Notes (scoped to the active application) ──
-  listNotes(appId: string): Observable<{ notes: Note[] }> {
-    return this.http.get<{ notes: Note[] }>(`${API_BASE}/api/applications/${appId}/notes`);
+  updateEpic(id: string, epicId: string, input: EpicInput): Observable<Epic> {
+    return this.http.put<Epic>(`${API_BASE}/api/db/connections/${id}/epics/${epicId}`, input);
   }
 
-  createNote(appId: string, input: NoteInput): Observable<Note> {
-    return this.http.post<Note>(`${API_BASE}/api/applications/${appId}/notes`, input);
+  deleteEpic(id: string, epicId: string): Observable<{ ok: boolean }> {
+    return this.http.delete<{ ok: boolean }>(`${API_BASE}/api/db/connections/${id}/epics/${epicId}`);
   }
 
-  updateNote(appId: string, noteId: string, input: NoteInput): Observable<Note> {
-    return this.http.put<Note>(`${API_BASE}/api/applications/${appId}/notes/${noteId}`, input);
+  // ── Notes (in the active connection's application DB) ──
+  listNotes(id: string): Observable<{ notes: Note[] }> {
+    return this.http.get<{ notes: Note[] }>(`${API_BASE}/api/db/connections/${id}/notes`);
   }
 
-  deleteNote(appId: string, noteId: string): Observable<{ ok: boolean }> {
-    return this.http.delete<{ ok: boolean }>(`${API_BASE}/api/applications/${appId}/notes/${noteId}`);
+  createNote(id: string, input: NoteInput): Observable<Note> {
+    return this.http.post<Note>(`${API_BASE}/api/db/connections/${id}/notes`, input);
+  }
+
+  updateNote(id: string, noteId: string, input: NoteInput): Observable<Note> {
+    return this.http.put<Note>(`${API_BASE}/api/db/connections/${id}/notes/${noteId}`, input);
+  }
+
+  deleteNote(id: string, noteId: string): Observable<{ ok: boolean }> {
+    return this.http.delete<{ ok: boolean }>(`${API_BASE}/api/db/connections/${id}/notes/${noteId}`);
   }
 
   // ── Live activity feed (ntfy mirror over WebSocket) ──
@@ -91,41 +112,58 @@ export class DbService {
     return `${proto}://${host}:${API_PORT}/api/activity`;
   }
 
-  // ── Business rules (scoped to the active application) ──
-  listBusinessRules(appId: string): Observable<{ rules: AppBusinessRule[] }> {
-    return this.http.get<{ rules: AppBusinessRule[] }>(`${API_BASE}/api/applications/${appId}/business-rules`);
+  // ── Business rules (in the active connection's application DB) ──
+  listBusinessRules(id: string): Observable<{ rules: AppBusinessRule[] }> {
+    return this.http.get<{ rules: AppBusinessRule[] }>(`${API_BASE}/api/db/connections/${id}/business-rules`);
   }
 
-  createBusinessRule(appId: string, input: AppBusinessRuleInput): Observable<AppBusinessRule> {
-    return this.http.post<AppBusinessRule>(`${API_BASE}/api/applications/${appId}/business-rules`, input);
+  createBusinessRule(id: string, input: AppBusinessRuleInput): Observable<AppBusinessRule> {
+    return this.http.post<AppBusinessRule>(`${API_BASE}/api/db/connections/${id}/business-rules`, input);
   }
 
-  updateBusinessRule(appId: string, brId: string, input: AppBusinessRuleInput): Observable<AppBusinessRule> {
-    return this.http.put<AppBusinessRule>(`${API_BASE}/api/applications/${appId}/business-rules/${brId}`, input);
+  updateBusinessRule(id: string, brId: string, input: AppBusinessRuleInput): Observable<AppBusinessRule> {
+    return this.http.put<AppBusinessRule>(`${API_BASE}/api/db/connections/${id}/business-rules/${brId}`, input);
   }
 
-  deleteBusinessRule(appId: string, brId: string): Observable<{ ok: boolean }> {
-    return this.http.delete<{ ok: boolean }>(`${API_BASE}/api/applications/${appId}/business-rules/${brId}`);
+  deleteBusinessRule(id: string, brId: string): Observable<{ ok: boolean }> {
+    return this.http.delete<{ ok: boolean }>(`${API_BASE}/api/db/connections/${id}/business-rules/${brId}`);
   }
 
   // ── Additional agent information (extra context attached to a BR) ──
-  listAgentInfo(appId: string): Observable<{ info: BrAgentInfo[] }> {
-    return this.http.get<{ info: BrAgentInfo[] }>(`${API_BASE}/api/applications/${appId}/agent-info`);
+  listAgentInfo(id: string): Observable<{ info: BrAgentInfo[] }> {
+    return this.http.get<{ info: BrAgentInfo[] }>(`${API_BASE}/api/db/connections/${id}/agent-info`);
   }
 
-  createAgentInfo(appId: string, input: BrAgentInfoInput): Observable<BrAgentInfo> {
-    return this.http.post<BrAgentInfo>(`${API_BASE}/api/applications/${appId}/agent-info`, input);
+  createAgentInfo(id: string, input: BrAgentInfoInput): Observable<BrAgentInfo> {
+    return this.http.post<BrAgentInfo>(`${API_BASE}/api/db/connections/${id}/agent-info`, input);
   }
 
-  updateAgentInfo(appId: string, infoId: string, input: BrAgentInfoInput): Observable<BrAgentInfo> {
-    return this.http.put<BrAgentInfo>(`${API_BASE}/api/applications/${appId}/agent-info/${infoId}`, input);
+  updateAgentInfo(id: string, infoId: string, input: BrAgentInfoInput): Observable<BrAgentInfo> {
+    return this.http.put<BrAgentInfo>(`${API_BASE}/api/db/connections/${id}/agent-info/${infoId}`, input);
   }
 
-  deleteAgentInfo(appId: string, infoId: string): Observable<{ ok: boolean }> {
-    return this.http.delete<{ ok: boolean }>(`${API_BASE}/api/applications/${appId}/agent-info/${infoId}`);
+  deleteAgentInfo(id: string, infoId: string): Observable<{ ok: boolean }> {
+    return this.http.delete<{ ok: boolean }>(`${API_BASE}/api/db/connections/${id}/agent-info/${infoId}`);
   }
 
-  // ── Methodology files (master DB: agents + commands) ──
+  // ── BR snapshots (point-in-time copies of the Epic + BR set for diffing) ──
+  listSnapshots(id: string): Observable<{ snapshots: BrSnapshotMeta[] }> {
+    return this.http.get<{ snapshots: BrSnapshotMeta[] }>(`${API_BASE}/api/db/connections/${id}/br-snapshots`);
+  }
+
+  createSnapshot(id: string, input: BrSnapshotInput): Observable<BrSnapshot> {
+    return this.http.post<BrSnapshot>(`${API_BASE}/api/db/connections/${id}/br-snapshots`, input);
+  }
+
+  getSnapshot(id: string, snapId: string): Observable<BrSnapshot> {
+    return this.http.get<BrSnapshot>(`${API_BASE}/api/db/connections/${id}/br-snapshots/${snapId}`);
+  }
+
+  deleteSnapshot(id: string, snapId: string): Observable<{ ok: boolean }> {
+    return this.http.delete<{ ok: boolean }>(`${API_BASE}/api/db/connections/${id}/br-snapshots/${snapId}`);
+  }
+
+  // ── Methodology files (agents + commands, served from .claude/ on disk) ──
   listMethodology(): Observable<{ files: MethodologyFileMeta[] }> {
     return this.http.get<{ files: MethodologyFileMeta[] }>(`${API_BASE}/api/methodology`);
   }
@@ -136,5 +174,13 @@ export class DbService {
 
   saveMethodology(kind: MethodologyKind, name: string, content: string): Observable<MethodologyFile> {
     return this.http.put<MethodologyFile>(`${API_BASE}/api/methodology/${kind}/${encodeURIComponent(name)}`, { content });
+  }
+
+  deleteMethodology(kind: MethodologyKind, name: string): Observable<{ kind: string; name: string; deleted: boolean }> {
+    return this.http.delete<{ kind: string; name: string; deleted: boolean }>(`${API_BASE}/api/methodology/${kind}/${encodeURIComponent(name)}`);
+  }
+
+  renameMethodology(kind: MethodologyKind, name: string, newName: string): Observable<MethodologyFile> {
+    return this.http.post<MethodologyFile>(`${API_BASE}/api/methodology/${kind}/${encodeURIComponent(name)}/rename`, { newName });
   }
 }

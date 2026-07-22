@@ -4,9 +4,11 @@ const fs = require('fs').promises;
 const path = require('path');
 const http = require('http');
 const { execFile } = require('child_process');
+const { promisify } = require('util');
 const { WebSocketServer } = require('ws');
 const pty = require('node-pty');
 const dbStore = require('./db-store');
+const methodology = require('./methodology-store');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -124,12 +126,474 @@ app.get('/api/tmux/sessions', (_req, res) => {
   );
 });
 
+// ── Claude sessions: per-BR git worktree + tmux `claude` session ───────────────
+// "Submit with Claude" from the BR dialog hands a rule to a fresh `claude` CLI
+// running in its OWN git worktree, so the work is isolated per BR. tmux, git and
+// claude all live inside WSL; the Windows repo path is translated with `wslpath`.
+const execFileP = promisify(execFile);
+
+// Run a program (no shell) inside WSL and resolve with { stdout, stderr }.
+function wsl(args, opts = {}) {
+  return execFileP('wsl.exe', ['-d', WSL_DISTRO, '--', ...args], { timeout: 20000, windowsHide: true, ...opts });
+}
+
+// Translate a Windows path to its WSL /mnt/… form. We do this in Node rather than
+// shelling out to `wslpath`, because passing a backslashed C:\… path through
+// wsl.exe's argument marshalling eats the backslashes. Paths here are always local
+// drive paths, so the mapping is deterministic.
+function toWslPath(winPath) {
+  const abs = path.resolve(winPath);
+  const m = /^([A-Za-z]):[\\/]?(.*)$/.exec(abs);
+  if (!m) return abs.replace(/\\/g, '/');
+  return `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, '/')}`;
+}
+
+// Resolve the MAIN repository working tree, even when this server was launched
+// from inside a linked git worktree (e.g. .claude/worktrees/test). A linked
+// worktree's `.git` is a FILE ("gitdir: <root>/.git/worktrees/<name>"), not a
+// directory; feeding that path to `git` inside WSL mangles the Windows gitdir and
+// fails. We parse it in Node instead and always run worktree ops against the real
+// repo root, so it works regardless of which worktree started the server. Cached.
+let mainRepoRootCache;
+async function mainRepoRoot() {
+  if (mainRepoRootCache) return mainRepoRootCache;
+  const dotGit = path.join(__dirname, '.git');
+  let root = __dirname;
+  try {
+    const stat = await fs.stat(dotGit);
+    if (!stat.isDirectory()) {
+      // Linked worktree: `.git` points at <root>/.git/worktrees/<name>.
+      const m = /^gitdir:\s*(.+)$/m.exec(await fs.readFile(dotGit, 'utf8'));
+      if (m) {
+        const gitdir = m[1].trim().replace(/\\/g, '/');   // <root>/.git/worktrees/<name>
+        root = path.dirname(path.dirname(path.dirname(gitdir))); // → <root>
+      }
+    }
+  } catch { /* fall back to __dirname (assume main checkout) */ }
+  mainRepoRootCache = root;
+  return root;
+}
+
+// Local YYYYMMDD stamp, used to name a fresh per-BR worktree/branch per day.
+function yyyymmdd() {
+  const d = new Date();
+  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Derive a filesystem/tmux-safe slug from a BR name. The result feeds the tmux
+// session (`claude-<slug>`, must match SESSION_RE), branch (`claude/<slug>`) and
+// worktree dir, so keep it to [a-z0-9._-].
+function brSlug(name) {
+  const slug = String(name || '').trim().toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^[-._]+|[-._]+$/g, '')
+    .slice(0, 60)
+    .replace(/[-._]+$/g, '');
+  if (!slug) throw new Error('cannot derive a slug from the BR name');
+  return slug;
+}
+
+// Is `claude` reachable from a WSL login shell? (It's typically installed via
+// nvm/npm-global, only on PATH once the login profile has run.)
+async function claudeAvailable() {
+  try { await wsl(['bash', '-lc', 'command -v claude']); return true; } catch { return false; }
+}
+
+async function tmuxHasSession(session) {
+  // `=name` forces an exact match so `claude-foo` can't match `claude-foobar`.
+  try { await wsl(['tmux', 'has-session', '-t', `=${session}`]); return true; } catch { return false; }
+}
+
+// Create the worktree + branch for a BR, idempotently: reuse the worktree if it
+// (or the branch) already exists, so re-submitting the same BR never 500s.
+async function ensureWorktree(repoWsl, worktreeWsl, branch) {
+  const listed = await wsl(['git', '-C', repoWsl, 'worktree', 'list', '--porcelain']).catch(() => ({ stdout: '' }));
+  if (listed.stdout.split(/\r?\n/).some(l => l.trim() === `worktree ${worktreeWsl}`)) return;
+  const attempts = [
+    ['git', '-C', repoWsl, 'worktree', 'add', '-b', branch, worktreeWsl], // fresh branch
+    ['git', '-C', repoWsl, 'worktree', 'add', worktreeWsl, branch],       // branch already exists
+  ];
+  let lastErr;
+  for (const a of attempts) {
+    try { await wsl(a); return; } catch (e) {
+      lastErr = e;
+      if (/already (exists|used|checked out)/i.test(`${e.stderr || ''}${e.message || ''}`)) return;
+    }
+  }
+  throw new Error(`git worktree add failed: ${(lastErr.stderr || lastErr.message || '').trim()}`);
+}
+
+// Spawn (or reuse) a Claude session for a Business Rule.
+app.post('/api/claude/sessions', async (req, res) => {
+  try {
+    const brName = String(req.body?.brName || '').trim();
+    const rule = String(req.body?.rule || '').trim();
+    const description = req.body?.description == null ? '' : String(req.body.description).trim();
+    if (!brName) return res.status(400).json({ error: 'brName is required' });
+    if (!rule) return res.status(400).json({ error: 'rule is required' });
+
+    const slug = brSlug(brName);
+    const session = `claude-${slug}`;
+    if (!SESSION_RE.test(session)) return res.status(400).json({ error: `invalid session name: ${session}` });
+
+    if (!(await claudeAvailable())) {
+      return res.status(400).json({ error: 'the `claude` CLI was not found on PATH inside WSL — install it or check your login shell' });
+    }
+
+    // The tmux session name stays deterministic (`claude-<slug>`) so the Claude
+    // Sessions page can join it back to its BR. If a session for this BR is already
+    // live, reuse it rather than spinning up a second worktree for the same rule.
+    if (await tmuxHasSession(session)) {
+      return res.status(200).json({ session, branch: `claude/${slug}`, worktree: null, reused: true });
+    }
+
+    // A fresh, isolated worktree per BR: `<slug>-YYYYMMDD` checked out on its own
+    // branch. Crucially this runs against the MAIN repo root (resolved above), not
+    // `__dirname` — so it works even when the server was launched from inside a
+    // linked worktree, whose `.git` is a file git-in-WSL can't dereference.
+    const worktreeName = `${slug}-${yyyymmdd()}`;
+    const branch = `claude/${worktreeName}`;
+    const root = await mainRepoRoot();
+    const repoWsl = toWslPath(root);
+    const worktreeWsl = toWslPath(path.resolve(root, '..', 'ASV-worktrees', worktreeName));
+    await ensureWorktree(repoWsl, worktreeWsl, branch);
+
+    // Start a detached tmux session that runs `claude` seeded with the rule. We
+    // launch through `bash -lc 'exec claude "$1"' _ <prompt>` so: (a) the login
+    // shell puts claude on PATH, (b) the prompt is passed as a positional arg —
+    // never interpolated into a shell string, so arbitrary rule text is safe, and
+    // (c) `exec` makes claude the pane's process (clean exit semantics).
+    const prompt = description ? `${rule}\n\n${description}` : rule;
+    await wsl(['tmux', 'new-session', '-d', '-s', session, '-c', worktreeWsl,
+      'bash', '-lc', 'exec claude "$1"', 'claude-seed', prompt]);
+    res.status(201).json({ session, branch, worktree: worktreeWsl });
+  } catch (err) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// ── Claude session archive (conversation transcripts) ──────────────────────────
+// The Stop/SessionEnd hook (.claude/hooks/sync-transcript.sh) mirrors each session's
+// transcript into ONE central store in the main working tree as
+// `<prefix>__<sessionUuid>.jsonl`, where <prefix> is the source worktree's basename.
+// A per-BR worktree is `<slug>-YYYYMMDD`, so its archives carry the dated prefix;
+// baseSlug() strips the date to rejoin them to the tmux session (`claude-<slug>`).
+// Everything resolves against the MAIN repo root so it works when the server was
+// launched from inside a linked worktree (e.g. .claude/worktrees/test).
+async function conversationsDir() {
+  return path.resolve(await mainRepoRoot(), '.claude', 'conversations');
+}
+async function asvWorktreesDir() {
+  return path.resolve(await mainRepoRoot(), '..', 'ASV-worktrees');
+}
+
+// A per-BR worktree/branch/archive is named `<slug>-YYYYMMDD`, but its tmux session
+// and BR slug drop the date. Strip an optional trailing date so every artifact keys
+// back to the base slug the Claude Sessions page joins on (claude-<baseSlug>).
+function baseSlug(name) {
+  return name.replace(/-\d{8}$/, '');
+}
+
+// Map a WSL cwd to Claude Code's per-project transcript dir name: every
+// non-alphanumeric char becomes '-' (verified against ~/.claude/projects/*).
+function claudeProjectSlug(wslPath) {
+  return wslPath.replace(/[^A-Za-z0-9]/g, '-');
+}
+
+// Archived transcripts keyed by BASE slug → [{ file, uuid, mtimeMs }], newest usable
+// via a sort. `dated` holds the base slugs that came from a `<slug>-YYYYMMDD` prefix
+// — i.e. per-BR sessions — so archives from dev worktrees (the main tree, `test`, …)
+// don't masquerade as Claude sessions. Missing dir → empty (nothing archived yet).
+async function listArchives() {
+  const dir = await conversationsDir();
+  let files;
+  try { files = await fs.readdir(dir); } catch { return { bySlug: new Map(), dated: new Set() }; }
+  const bySlug = new Map();
+  const dated = new Set();
+  for (const f of files) {
+    if (!f.endsWith('.jsonl')) continue;
+    const sep = f.indexOf('__');
+    if (sep <= 0) continue;
+    const prefix = f.slice(0, sep);
+    const uuid = f.slice(sep + 2, -('.jsonl'.length));
+    const slug = baseSlug(prefix);
+    if (prefix !== slug) dated.add(slug); // had a -YYYYMMDD suffix → a per-BR session
+    let mtimeMs = 0;
+    try { mtimeMs = (await fs.stat(path.join(dir, f))).mtimeMs; } catch { /* ignore */ }
+    const arr = bySlug.get(slug) || [];
+    arr.push({ file: f, uuid, mtimeMs });
+    bySlug.set(slug, arr);
+  }
+  return { bySlug, dated };
+}
+
+// Base slugs of the per-BR worktrees that currently exist on disk (../ASV-worktrees/*,
+// each named `<slug>-YYYYMMDD`). Resolved against the main repo root.
+async function worktreeSlugs() {
+  try {
+    const entries = await fs.readdir(await asvWorktreesDir(), { withFileTypes: true });
+    return entries.filter(e => e.isDirectory()).map(e => baseSlug(e.name));
+  } catch { return []; }
+}
+
+// Live claude-* tmux session names (empty when no tmux server is running).
+function liveClaudeSessions() {
+  return new Promise(resolve => {
+    execFile('wsl.exe', ['-d', WSL_DISTRO, '--', 'tmux', 'ls'],
+      { timeout: 5000, windowsHide: true }, (err, stdout) => {
+        const names = err ? [] : (stdout || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+          .map(l => l.split(':')[0].trim()).filter(Boolean);
+        resolve(names.filter(n => n.startsWith('claude-')));
+      });
+  });
+}
+
+// List Claude sessions: running (live in tmux) AND dead (a worktree or an archived
+// transcript exists, but no live tmux session). Liveness is derived from tmux, not
+// stored, so it survives a server restart. The BR/branch join happens client-side.
+app.get('/api/claude/sessions', async (_req, res) => {
+  try {
+    const [live, wts, arch] = await Promise.all([liveClaudeSessions(), worktreeSlugs(), listArchives()]);
+    const bySession = new Map();
+    const add = (name, running, hasTranscript) => {
+      const cur = bySession.get(name);
+      if (cur) { cur.running = cur.running || running; cur.hasTranscript = cur.hasTranscript || hasTranscript; }
+      else bySession.set(name, { name, running, hasTranscript });
+    };
+    for (const name of live) add(name, true, false);
+    for (const slug of wts) add(`claude-${slug}`, false, arch.bySlug.has(slug));
+    // Dead sessions whose worktree was removed but a dated transcript survives.
+    for (const slug of arch.dated) add(`claude-${slug}`, false, true);
+    // Live sessions may also have an archive from an earlier Stop.
+    for (const [name, s] of bySession) {
+      if (arch.bySlug.has(name.slice('claude-'.length))) s.hasTranscript = true;
+    }
+    res.json({ sessions: [...bySession.values()] });
+  } catch (err) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// Reduce a Claude Code transcript JSONL to the prompt/answer thread: user text and
+// assistant text only — no thinking, tool_use or tool_result blocks.
+function textFromContent(content) {
+  if (typeof content === 'string') return content.trim();
+  if (Array.isArray(content)) {
+    return content.filter(b => b && b.type === 'text' && typeof b.text === 'string')
+      .map(b => b.text).join('\n').trim();
+  }
+  return '';
+}
+
+function parseTranscript(raw) {
+  const out = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const s = line.trim();
+    if (!s) continue;
+    let obj;
+    try { obj = JSON.parse(s); } catch { continue; }
+    if (obj.isMeta || !obj.message) continue;
+    if (obj.type === 'user') {
+      // Skip tool_result echoes (user-role messages that only carry tool output).
+      if (Array.isArray(obj.message.content) && obj.message.content.every(b => b && b.type === 'tool_result')) continue;
+      const text = textFromContent(obj.message.content);
+      if (text) out.push({ role: 'user', text, at: obj.timestamp || null });
+    } else if (obj.type === 'assistant') {
+      const text = textFromContent(obj.message.content);
+      if (text) out.push({ role: 'assistant', text, at: obj.timestamp || null });
+    }
+  }
+  return out;
+}
+
+// The archived conversation for a session (most recent transcript), prompt/answer only.
+app.get('/api/claude/sessions/:session/conversation', async (req, res) => {
+  try {
+    const session = String(req.params.session || '');
+    if (!SESSION_RE.test(session) || !session.startsWith('claude-')) {
+      return res.status(400).json({ error: `invalid session name: ${session}` });
+    }
+    const slug = session.slice('claude-'.length);
+    const list = (await listArchives()).bySlug.get(slug);
+    if (!list || !list.length) return res.status(404).json({ error: 'no transcript has been archived for this session yet' });
+    list.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    const chosen = list[0];
+    const raw = await fs.readFile(path.join(await conversationsDir(), chosen.file), 'utf-8');
+    res.json({ session, sessionId: chosen.uuid, file: chosen.file, messages: parseTranscript(raw) });
+  } catch (err) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// Reopen a dead session. Claude replays its OWN per-project transcript store
+// (~/.claude/projects/<slug>/ inside WSL), so we: (1) resume when that store is
+// intact; (2) rehydrate it from our central archive — byte-for-byte the same
+// files — then resume when it was pruned; (3) start fresh (seeded with the rule
+// when the client supplies it) when there's nothing to replay.
+app.post('/api/claude/sessions/:session/reopen', async (req, res) => {
+  try {
+    const session = String(req.params.session || '');
+    if (!SESSION_RE.test(session) || !session.startsWith('claude-')) {
+      return res.status(400).json({ error: `invalid session name: ${session}` });
+    }
+    const slug = session.slice('claude-'.length);
+    const rule = req.body?.rule == null ? '' : String(req.body.rule).trim();
+    const description = req.body?.description == null ? '' : String(req.body.description).trim();
+
+    if (!(await claudeAvailable())) {
+      return res.status(400).json({ error: 'the `claude` CLI was not found on PATH inside WSL — install it or check your login shell' });
+    }
+    if (await tmuxHasSession(session)) return res.json({ session, branch: `claude/${slug}`, mode: 'already-running' });
+
+    // Reuse the most recent existing dated worktree for this BR (its native transcript
+    // store, if intact, gives the cleanest resume); otherwise mint today's worktree.
+    const root = await mainRepoRoot();
+    const repoWsl = toWslPath(root);
+    let worktreeName = null;
+    try {
+      const entries = await fs.readdir(await asvWorktreesDir(), { withFileTypes: true });
+      const mine = entries.filter(e => e.isDirectory() && baseSlug(e.name) === slug).map(e => e.name).sort();
+      if (mine.length) worktreeName = mine[mine.length - 1];
+    } catch { /* no worktrees dir yet */ }
+    if (!worktreeName) worktreeName = `${slug}-${yyyymmdd()}`;
+    const branch = `claude/${worktreeName}`;
+    const worktreeWsl = toWslPath(path.resolve(root, '..', 'ASV-worktrees', worktreeName));
+    await ensureWorktree(repoWsl, worktreeWsl, branch);
+
+    // Is Claude's native transcript store for this worktree still present?
+    const nativeDir = `$HOME/.claude/projects/${claudeProjectSlug(worktreeWsl)}`;
+    let canResume = false;
+    try { await wsl(['bash', '-lc', `ls ${nativeDir}/*.jsonl >/dev/null 2>&1`]); canResume = true; } catch { canResume = false; }
+
+    let mode;
+    if (canResume) {
+      mode = 'resumed';
+    } else {
+      const list = (await listArchives()).bySlug.get(slug);
+      if (list && list.length) {
+        list.sort((a, b) => b.mtimeMs - a.mtimeMs);
+        const chosen = list[0];
+        const srcWsl = toWslPath(path.join(await conversationsDir(), chosen.file));
+        // Restore the native transcript from the archive, then --continue can replay it.
+        await wsl(['bash', '-lc', `mkdir -p "${nativeDir}" && cp "$1" "${nativeDir}/$2"`,
+          'rehydrate', srcWsl, `${chosen.uuid}.jsonl`]);
+        mode = 'rehydrated';
+      } else {
+        mode = rule ? 'fresh-seeded' : 'fresh';
+      }
+    }
+
+    if (mode === 'resumed' || mode === 'rehydrated') {
+      await wsl(['tmux', 'new-session', '-d', '-s', session, '-c', worktreeWsl,
+        'bash', '-lc', 'exec claude --continue']);
+    } else if (mode === 'fresh-seeded') {
+      const prompt = description ? `${rule}\n\n${description}` : rule;
+      await wsl(['tmux', 'new-session', '-d', '-s', session, '-c', worktreeWsl,
+        'bash', '-lc', 'exec claude "$1"', 'claude-seed', prompt]);
+    } else {
+      await wsl(['tmux', 'new-session', '-d', '-s', session, '-c', worktreeWsl,
+        'bash', '-lc', 'exec claude']);
+    }
+    res.status(201).json({ session, branch, worktree: worktreeWsl, mode });
+  } catch (err) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// Kill a running session's tmux session (the claude process exits with it). The
+// worktree and any archived transcript are left intact, so it can still be reopened.
+app.post('/api/claude/sessions/:session/kill', async (req, res) => {
+  try {
+    const session = String(req.params.session || '');
+    if (!SESSION_RE.test(session) || !session.startsWith('claude-')) {
+      return res.status(400).json({ error: `invalid session name: ${session}` });
+    }
+    // `=name` forces an exact match so we can't kill a similarly-named session.
+    await wsl(['tmux', 'kill-session', '-t', `=${session}`]).catch(e => {
+      // Already gone (no such session / no server) is success for our purposes.
+      if (/can't find|no such|no server/i.test(`${e.stderr || ''}${e.message || ''}`)) return;
+      throw e;
+    });
+    res.json({ ok: true, session });
+  } catch (err) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// ── Git: history + worktrees ──────────────────────────────────────────────────
+// Read-only views over the repo's OWN git, for the in-app Git page. Everything
+// runs through the same WSL git used for Claude worktrees, so the worktree paths
+// shown here line up with the sessions page. Field separator \x1f (unit sep) can't
+// occur in commit metadata, so parsing stays trivial.
+const GIT_LOG_FMT = ['%H', '%h', '%an', '%ae', '%at', '%D', '%s'].join('%x1f');
+
+app.get('/api/git/worktrees', async (_req, res) => {
+  try {
+    const repoWsl = toWslPath(__dirname);
+    const { stdout } = await wsl(['git', '-C', repoWsl, 'worktree', 'list', '--porcelain']);
+    const worktrees = [];
+    let cur = null;
+    for (const line of stdout.split(/\r?\n/)) {
+      if (line.startsWith('worktree ')) {
+        cur = { path: line.slice('worktree '.length), head: null, branch: null,
+                detached: false, bare: false, locked: false };
+        worktrees.push(cur);
+      } else if (!cur) {
+        continue;
+      } else if (line.startsWith('HEAD ')) {
+        cur.head = line.slice('HEAD '.length);
+      } else if (line.startsWith('branch ')) {
+        cur.branch = line.slice('branch '.length).replace(/^refs\/heads\//, '');
+      } else if (line === 'detached') {
+        cur.detached = true;
+      } else if (line === 'bare') {
+        cur.bare = true;
+      } else if (line === 'locked' || line.startsWith('locked ')) {
+        cur.locked = true;
+      }
+    }
+    if (worktrees[0]) worktrees[0].main = true; // git lists the primary tree first
+    res.json({ worktrees });
+  } catch (err) {
+    res.status(500).json({ error: (err.stderr || err.message || String(err)).trim() });
+  }
+});
+
+app.get('/api/git/log', async (req, res) => {
+  try {
+    const repoWsl = toWslPath(__dirname);
+    const limit = clampInt(req.query.limit, 100, 1, 1000);
+    // Optional ref (branch name or sha) to scope the log to one worktree's branch.
+    // Constrain it to ref-safe characters so it can't smuggle extra git args.
+    const ref = String(req.query.ref || '').trim();
+    if (ref && !/^[A-Za-z0-9._/-]+$/.test(ref)) {
+      return res.status(400).json({ error: 'invalid ref' });
+    }
+    const args = ['git', '-C', repoWsl, 'log', `--pretty=format:${GIT_LOG_FMT}`, '-n', String(limit)];
+    if (ref) args.push(ref);
+    args.push('--'); // terminate revisions: nothing after is treated as a pathspec
+    const { stdout } = await wsl(args);
+    const commits = stdout.split(/\r?\n/).filter(Boolean).map((line) => {
+      const [hash, short, author, email, at, refs, subject] = line.split('\x1f');
+      return {
+        hash, short, author, email,
+        date: Number(at) * 1000,
+        refs: refs ? refs.split(', ').map((s) => s.trim()).filter(Boolean) : [],
+        subject: subject || '',
+      };
+    });
+    res.json({ commits });
+  } catch (err) {
+    res.status(500).json({ error: (err.stderr || err.message || String(err)).trim() });
+  }
+});
+
 // ── Applications + their state (single store DB) ──────────────────────────────
 // Everything lives in one MariaDB database. `applications` is the top-level
-// entity; epics/business-rules/notes/agent-info are scoped by application id.
-// The selector in the UI flips which application the state endpoints read/write.
-// All handlers funnel errors through a shared helper so a downed MariaDB surfaces
-// as 503, a bad body as 400, and everything else as 500.
+// entity; epics/business-rules/notes/snapshots/agent-info are scoped by
+// application id. The selector in the UI flips which application the state
+// endpoints read/write. All handlers funnel errors through a shared helper so a
+// downed MariaDB surfaces as 503, a bad body as 400, and everything else as 500.
 function sendDbError(res, err) {
   res.status(err.status || 500).json({ error: err.message });
 }
@@ -154,14 +618,14 @@ app.put('/api/applications/active', async (req, res) => {
 });
 
 // Convenience read for the develop agents: the applicable agent info for the
-// ACTIVE application, filtered to development progress via ?uptoSeq=<seq>.
+// ACTIVE application, filtered to development progress via ?uptoExecutionOrder=<n>.
 app.get('/api/applications/active/agent-info', async (req, res) => {
   try {
     const activeId = await dbStore.getActiveId();
     if (!activeId) return res.json({ info: [], activeId: null });
-    const { uptoSeq } = req.query;
-    const info = uptoSeq != null
-      ? await dbStore.listAgentInfoUpToSeq(activeId, String(uptoSeq))
+    const { uptoExecutionOrder } = req.query;
+    const info = uptoExecutionOrder != null
+      ? await dbStore.listAgentInfoUpToExecutionOrder(activeId, String(uptoExecutionOrder))
       : await dbStore.listAgentInfo(activeId);
     res.json({ info, activeId });
   } catch (err) { sendDbError(res, err); }
@@ -183,7 +647,7 @@ app.delete('/api/applications/:appId', async (req, res) => {
   } catch (err) { sendDbError(res, err); }
 });
 
-// ── Application state: Epics + Business Rules + Notes ──────────────────────────
+// ── Application state: Epics + Business Rules + Notes + snapshots ──────────────
 // Every route is scoped to an application id: the viewer flips the active
 // application to switch which epics/BRs it reads and edits.
 app.get('/api/applications/:appId/epics', async (req, res) => {
@@ -260,14 +724,42 @@ app.delete('/api/applications/:appId/business-rules/:brId', async (req, res) => 
   } catch (err) { sendDbError(res, err); }
 });
 
+// ── BR snapshots (point-in-time copies of the whole Epic + BR set) ────────────
+// A snapshot captures the current epics + business rules so they can be diffed
+// against the live set later. Scoped per application like epics/business-rules.
+app.get('/api/applications/:appId/br-snapshots', async (req, res) => {
+  try { res.json({ snapshots: await dbStore.listSnapshots(req.params.appId) }); } catch (err) { sendDbError(res, err); }
+});
+
+app.post('/api/applications/:appId/br-snapshots', async (req, res) => {
+  try { res.status(201).json(await dbStore.createSnapshot(req.params.appId, req.body || {})); } catch (err) { sendDbError(res, err); }
+});
+
+app.get('/api/applications/:appId/br-snapshots/:snapId', async (req, res) => {
+  try {
+    const snapshot = await dbStore.getSnapshot(req.params.appId, req.params.snapId);
+    if (!snapshot) return res.status(404).json({ error: 'snapshot not found' });
+    res.json(snapshot);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/applications/:appId/br-snapshots/:snapId', async (req, res) => {
+  try {
+    const ok = await dbStore.deleteSnapshot(req.params.appId, req.params.snapId);
+    if (!ok) return res.status(404).json({ error: 'snapshot not found' });
+    res.json({ ok: true });
+  } catch (err) { sendDbError(res, err); }
+});
+
 // ── Additional agent information (extra agent-facing context per Business Rule) ─
-// `?uptoSeq=<seq>` filters to entries whose referenced BR has been reached by
-// development (referenced BR seq <= uptoSeq) — what the develop agents load.
+// `?uptoExecutionOrder=<n>` filters to entries whose referenced BR has been
+// reached by development (referenced BR execution_order <= n) — what the develop
+// agents load.
 app.get('/api/applications/:appId/agent-info', async (req, res) => {
   try {
-    const { uptoSeq } = req.query;
-    const info = uptoSeq != null
-      ? await dbStore.listAgentInfoUpToSeq(req.params.appId, String(uptoSeq))
+    const { uptoExecutionOrder } = req.query;
+    const info = uptoExecutionOrder != null
+      ? await dbStore.listAgentInfoUpToExecutionOrder(req.params.appId, String(uptoExecutionOrder))
       : await dbStore.listAgentInfo(req.params.appId);
     res.json({ info });
   } catch (err) { sendDbError(res, err); }
@@ -293,23 +785,33 @@ app.delete('/api/applications/:appId/agent-info/:infoId', async (req, res) => {
   } catch (err) { sendDbError(res, err); }
 });
 
-// ── Methodology files in the master DB (agents + commands) ────────────────────
-// The master DB is the source of truth; saves also write through to .claude/ on
-// disk so Claude Code keeps seeing the live copy. Editable from within the app.
+// ── Methodology files (agents + commands) ─────────────────────────────────────
+// Served straight from .claude/ on disk — the filesystem is the single source of
+// truth (exactly where Claude Code discovers them), so there is no DB copy to seed
+// or keep in sync. Full CRUD: list, read, create/edit, delete, rename. Independent
+// of MariaDB, so methodology stays editable even when the database is down.
 app.get('/api/methodology', async (_req, res) => {
-  try { res.json({ files: await dbStore.listMethodologyFiles() }); } catch (err) { sendDbError(res, err); }
+  try { res.json({ files: await methodology.listMethodologyFiles() }); } catch (err) { sendDbError(res, err); }
 });
 
 app.get('/api/methodology/:kind/:name', async (req, res) => {
   try {
-    const file = await dbStore.getMethodologyFile(req.params.kind, req.params.name);
+    const file = await methodology.getMethodologyFile(req.params.kind, req.params.name);
     if (!file) return res.status(404).json({ error: 'file not found' });
     res.json(file);
   } catch (err) { sendDbError(res, err); }
 });
 
 app.put('/api/methodology/:kind/:name', async (req, res) => {
-  try { res.json(await dbStore.saveMethodologyFile(req.params.kind, req.params.name, (req.body || {}).content)); } catch (err) { sendDbError(res, err); }
+  try { res.json(await methodology.saveMethodologyFile(req.params.kind, req.params.name, (req.body || {}).content)); } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/methodology/:kind/:name', async (req, res) => {
+  try { res.json(await methodology.deleteMethodologyFile(req.params.kind, req.params.name)); } catch (err) { sendDbError(res, err); }
+});
+
+app.post('/api/methodology/:kind/:name/rename', async (req, res) => {
+  try { res.json(await methodology.renameMethodologyFile(req.params.kind, req.params.name, (req.body || {}).newName)); } catch (err) { sendDbError(res, err); }
 });
 
 // ── ntfy activity feed ────────────────────────────────────────────────────────

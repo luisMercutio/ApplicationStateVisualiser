@@ -4,7 +4,7 @@ import { Note } from '../../models/note.model';
 import { AppDataActions } from './app-data.actions';
 
 export interface AppDataState {
-  applicationId: string | null; // which application the data belongs to
+  connectionId: string | null; // which connection the data belongs to
   epics: Epic[];
   rules: AppBusinessRule[];
   agentInfo: BrAgentInfo[];
@@ -14,7 +14,7 @@ export interface AppDataState {
 }
 
 const initialState: AppDataState = {
-  applicationId: null,
+  connectionId: null,
   epics: [],
   rules: [],
   agentInfo: [],
@@ -29,8 +29,8 @@ function upsertEpic(epics: Epic[], epic: Epic): Epic[] {
 }
 
 function upsertRule(rules: AppBusinessRule[], rule: AppBusinessRule): AppBusinessRule[] {
-  const idx = rules.findIndex(r => r.id === rule.id);
-  return idx >= 0 ? rules.map(r => (r.id === rule.id ? rule : r)) : [...rules, rule];
+  const idx = rules.findIndex(r => r.creationIndex === rule.creationIndex);
+  return idx >= 0 ? rules.map(r => (r.creationIndex === rule.creationIndex ? rule : r)) : [...rules, rule];
 }
 
 function upsertInfo(info: BrAgentInfo[], entry: BrAgentInfo): BrAgentInfo[] {
@@ -47,9 +47,9 @@ export const appDataFeature = createFeature({
   name: 'appData',
   reducer: createReducer(
     initialState,
-    on(AppDataActions.load, (state, { applicationId }) => ({ ...state, loading: true, error: null, applicationId })),
-    on(AppDataActions.loadSuccess, (state, { applicationId, epics, rules, agentInfo, notes }) => ({
-      ...state, applicationId, epics, rules, agentInfo, notes, loading: false, error: null,
+    on(AppDataActions.load, (state, { connectionId }) => ({ ...state, loading: true, error: null, connectionId })),
+    on(AppDataActions.loadSuccess, (state, { connectionId, epics, rules, agentInfo, notes }) => ({
+      ...state, connectionId, epics, rules, agentInfo, notes, loading: false, error: null,
     })),
     on(AppDataActions.loadFailure, (state, { error }) => ({ ...state, loading: false, error })),
     on(AppDataActions.clear, () => ({ ...initialState })),
@@ -67,9 +67,12 @@ export const appDataFeature = createFeature({
     on(AppDataActions.createRuleSuccess, AppDataActions.updateRuleSuccess, (state, { rule }) => ({
       ...state, rules: upsertRule(state.rules, rule), error: null,
     })),
+    on(AppDataActions.moveRuleToNewEpicSuccess, (state, { epic, rule }) => ({
+      ...state, epics: upsertEpic(state.epics, epic), rules: upsertRule(state.rules, rule), error: null,
+    })),
     on(AppDataActions.deleteRuleSuccess, (state, { ruleId }) => ({
       ...state,
-      rules: state.rules.filter(r => r.id !== ruleId),
+      rules: state.rules.filter(r => r.creationIndex !== ruleId),
       // The DB cascades agent-info on BR delete; mirror that locally.
       agentInfo: state.agentInfo.filter(i => i.businessRuleId !== ruleId),
     })),

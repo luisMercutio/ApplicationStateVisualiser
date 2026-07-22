@@ -8,8 +8,8 @@ import { layoutFeature } from './store/layout/layout.reducer';
 import { LayoutEffects } from './store/layout/layout.effects';
 import { layoutsFeature } from './store/layouts/layouts.reducer';
 import { LayoutsEffects } from './store/layouts/layouts.effects';
-import { applicationsFeature } from './store/applications/applications.reducer';
-import { ApplicationsEffects } from './store/applications/applications.effects';
+import { connectionsFeature } from './store/connections/connections.reducer';
+import { ConnectionsEffects } from './store/connections/connections.effects';
 import { appDataFeature } from './store/app-data/app-data.reducer';
 import { AppDataEffects } from './store/app-data/app-data.effects';
 import { methodologyFeature } from './store/methodology/methodology.reducer';
@@ -23,11 +23,11 @@ export const appConfig: ApplicationConfig = {
     provideStore({
       [layoutFeature.name]: layoutFeature.reducer,
       [layoutsFeature.name]: layoutsFeature.reducer,
-      [applicationsFeature.name]: applicationsFeature.reducer,
+      [connectionsFeature.name]: connectionsFeature.reducer,
       [appDataFeature.name]: appDataFeature.reducer,
       [methodologyFeature.name]: methodologyFeature.reducer,
     }),
-    provideEffects([LayoutEffects, LayoutsEffects, ApplicationsEffects, AppDataEffects, MethodologyEffects]),
+    provideEffects([LayoutEffects, LayoutsEffects, ConnectionsEffects, AppDataEffects, MethodologyEffects]),
     provideStoreDevtools({ maxAge: 25, logOnly: !isDevMode() }),
   ],
 };

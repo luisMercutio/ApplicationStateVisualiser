@@ -12,6 +12,34 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "command": "printf '{\"systemMessage\":\"Turn finished at %s\"}\\n' \"$(date '+%Y-%m-%d %H:%M:%S %Z')\""
+          },
+          {
+            "type": "command",
+            "shell": "bash",
+            "statusMessage": "Syncing conversation transcript into the project…",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/sync-transcript.sh\""
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/sync-transcript.sh\""
+          }
+        ]
+      }
     ]
   }
 }

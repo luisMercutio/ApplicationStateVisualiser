@@ -18,6 +18,14 @@ export const MethodologyActions = createActionGroup({
     'Save File': props<{ kind: MethodologyKind; name: string; content: string }>(),
     'Save File Success': props<{ key: string; content: string }>(),
     'Save File Failure': props<{ key: string; error: string }>(),
+    'Create File': props<{ kind: MethodologyKind; name: string; content: string }>(),
+    'Create File Failure': props<{ error: string }>(),
+    'Delete File': props<{ kind: MethodologyKind; name: string }>(),
+    'Delete File Success': props<{ key: string }>(),
+    'Delete File Failure': props<{ key: string; error: string }>(),
+    'Rename File': props<{ kind: MethodologyKind; name: string; newName: string }>(),
+    'Rename File Success': props<{ oldKey: string }>(),
+    'Rename File Failure': props<{ key: string; error: string }>(),
   },
 });
 

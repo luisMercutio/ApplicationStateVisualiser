@@ -2,30 +2,23 @@
 // This module owns everything database-related for the app. Everything lives in
 // ONE database (Store A, `app_state_visualiser` by default):
 //   • applications  — the registered applications whose "state" we visualise.
-//   • epics / business_rules / notes / br_additional_agent_information — the
-//     state of each application, every row scoped by application_id.
-//   • app_settings      — small key/value store (e.g. the active application).
-//   • methodology_files — the agents + commands, editable from within the app.
+//   • epics / business_rules / notes / br_additional_agent_information /
+//     br_snapshots — the state of each application, every row scoped by
+//     application_id.
+//   • app_settings  — small key/value store (e.g. the active application).
 //
 // There are no per-application databases and no external connection registry:
 // selecting an application simply filters the single store. Store A itself is
 // reached with env-configured credentials so no secret is ever committed.
+// (Methodology files live on disk and are served by methodology-store.js.)
 const mysql = require('mysql2/promise');
 const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
 
 function clampInt(value, fallback, min, max) {
   const n = parseInt(value, 10);
   if (!Number.isFinite(n)) return fallback;
   return Math.max(min, Math.min(max, n));
 }
-
-// The methodology files (agents + commands) live under this repo's .claude dir.
-// The store DB becomes their source of truth, but we also write edits back to
-// disk so Claude Code (which auto-discovers .claude/) always sees the live copy.
-const CLAUDE_DIR = path.resolve(__dirname, process.env.CLAUDE_DIR || '.claude');
-const METHODOLOGY_KINDS = { agent: 'agents', command: 'commands' }; // kind -> subdir
 
 // ── Store connection settings (env-configured, never persisted) ───────────────
 const STORE = {
@@ -78,20 +71,10 @@ async function init() {
         v TEXT
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
-    await storePool.query(`
-      CREATE TABLE IF NOT EXISTS methodology_files (
-        kind       VARCHAR(32)  NOT NULL,
-        name       VARCHAR(190) NOT NULL,
-        content    LONGTEXT,
-        updated_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        PRIMARY KEY (kind, name)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
-
     await ensureAppDataSchema();
 
     ready = true;
     initError = null;
-    await seedMethodology(); // best-effort; never blocks readiness
   } catch (err) {
     ready = false;
     initError = err.message;
@@ -102,8 +85,9 @@ async function init() {
 // The per-application "state" tables. Every row carries an application_id and is
 // removed with its application (ON DELETE CASCADE). epic_key / BR name are unique
 // *per application*, so two applications can each own an "EPIC-001" or a "BR-001".
-// Array/object BR fields are stored as JSON text and (de)serialised in this
-// module so the shape survives a round-trip on MariaDB (JSON == LONGTEXT).
+// A Business Rule's identity is its `creation_index` (UUID) and its position is a
+// global integer `execution_order`. Array/object BR fields are stored as JSON text
+// and (de)serialised in this module so the shape survives a round-trip on MariaDB.
 async function ensureAppDataSchema() {
   // epics first — business_rules.epic_id references it.
   await storePool.query(`
@@ -123,11 +107,11 @@ async function ensureAppDataSchema() {
 
   await storePool.query(`
     CREATE TABLE IF NOT EXISTS business_rules (
-      id                VARCHAR(36)  NOT NULL PRIMARY KEY,
+      creation_index    VARCHAR(36)  NOT NULL PRIMARY KEY,
       application_id    VARCHAR(36)  NOT NULL,
       name              VARCHAR(190) NOT NULL,
       epic_id           VARCHAR(36),
-      seq               VARCHAR(64),
+      execution_order   INT,
       rule              TEXT         NOT NULL,
       rationale         TEXT,
       category          VARCHAR(32),
@@ -136,6 +120,7 @@ async function ensureAppDataSchema() {
       depends_on        LONGTEXT,
       touches           LONGTEXT,
       delta             LONGTEXT,
+      needs_to_be_established TINYINT(1) NOT NULL DEFAULT 0,
       created_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       UNIQUE KEY uq_br_app_name (application_id, name),
@@ -146,9 +131,10 @@ async function ensureAppDataSchema() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
   // Extra, agent-facing context attached to a Business Rule. Each row references
-  // one BR and carries a free-text description. During development this is loaded
-  // into the developer agents once the BR under development has reached (seq >=)
-  // the referenced BR — see listAgentInfoUpToSeq.
+  // one BR (by its creation_index) and carries a free-text description. During
+  // development this is loaded into the developer agents once the BR under
+  // development has reached (execution_order >=) the referenced BR — see
+  // listAgentInfoUpToExecutionOrder.
   await storePool.query(`
     CREATE TABLE IF NOT EXISTS br_additional_agent_information (
       id               VARCHAR(36) NOT NULL PRIMARY KEY,
@@ -160,7 +146,7 @@ async function ensureAppDataSchema() {
       KEY idx_agentinfo_br (business_rule_id),
       KEY idx_agentinfo_app (application_id),
       CONSTRAINT fk_agentinfo_app FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE,
-      CONSTRAINT fk_agentinfo_br FOREIGN KEY (business_rule_id) REFERENCES business_rules(id) ON DELETE CASCADE
+      CONSTRAINT fk_agentinfo_br FOREIGN KEY (business_rule_id) REFERENCES business_rules(creation_index) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
   // Free-form notes / ideas kept against an application. `related_brs` is an
@@ -177,6 +163,26 @@ async function ensureAppDataSchema() {
       updated_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       KEY idx_notes_app (application_id),
       CONSTRAINT fk_notes_app FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+  // Point-in-time snapshots of an application's whole Epic + Business Rule set.
+  // Each row is a self-contained copy (the epics/rules DTO arrays frozen as JSON)
+  // so it stays meaningful even after the live rules are reordered, edited or
+  // deleted — the basis for the "diff against current" view. No FKs to the live
+  // tables, so a snapshot survives deletion of the BRs it captured; it is still
+  // scoped to (and removed with) its application.
+  await storePool.query(`
+    CREATE TABLE IF NOT EXISTS br_snapshots (
+      id             VARCHAR(36)  NOT NULL PRIMARY KEY,
+      application_id VARCHAR(36)  NOT NULL,
+      label          VARCHAR(255) NOT NULL,
+      epics          LONGTEXT     NOT NULL,
+      rules          LONGTEXT     NOT NULL,
+      epic_count     INT          NOT NULL DEFAULT 0,
+      rule_count     INT          NOT NULL DEFAULT 0,
+      created_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      KEY idx_snapshots_app (application_id),
+      CONSTRAINT fk_snapshots_app FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 }
 
@@ -281,7 +287,7 @@ async function updateApplication(id, input) {
 
 async function deleteApplication(id) {
   ensureReady();
-  // CASCADE removes the application's epics / BRs / notes / agent-info.
+  // CASCADE removes the application's epics / BRs / notes / agent-info / snapshots.
   const [res] = await storePool.query('DELETE FROM applications WHERE id = ?', [id]);
   const active = await getActiveId();
   if (active === id) await setActiveId(null);
@@ -452,10 +458,10 @@ async function deleteNote(appId, noteId) {
 // ── Business rules ────────────────────────────────────────────────────────────
 function brRowToDto(r) {
   return {
-    id: r.id,
+    creationIndex: r.creation_index,
     name: r.name,
     epicId: r.epic_id ?? null,
-    seq: r.seq ?? null,
+    executionOrder: r.execution_order ?? null,
     rule: r.rule,
     rationale: r.rationale ?? null,
     category: r.category ?? null,
@@ -464,6 +470,7 @@ function brRowToDto(r) {
     dependsOn: fromJsonText(r.depends_on, []),
     touches: fromJsonText(r.touches, {}),
     delta: fromJsonText(r.delta, {}),
+    needsToBeEstablished: !!r.needs_to_be_established,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
@@ -475,10 +482,14 @@ function normaliseBr(input) {
   if (!name) throw badRequest('name is required');
   if (!rule) throw badRequest('rule is required');
   const strArr = (v) => (Array.isArray(v) ? v.map(String) : []);
+  const execRaw = input?.executionOrder;
+  const executionOrder = execRaw == null || execRaw === '' || !Number.isFinite(Number(execRaw))
+    ? null
+    : Math.trunc(Number(execRaw));
   return {
     name, rule,
     epicId: input?.epicId ? String(input.epicId) : null,
-    seq: input?.seq == null ? null : String(input.seq).trim() || null,
+    executionOrder,
     rationale: input?.rationale == null ? null : String(input.rationale),
     category: input?.category ? String(input.category) : null,
     features: strArr(input?.features),
@@ -486,18 +497,19 @@ function normaliseBr(input) {
     dependsOn: strArr(input?.dependsOn),
     touches: input?.touches && typeof input.touches === 'object' ? input.touches : {},
     delta: input?.delta && typeof input.delta === 'object' ? input.delta : {},
+    needsToBeEstablished: input?.needsToBeEstablished === true || input?.needsToBeEstablished === 1,
   };
 }
 
 async function listBusinessRules(appId) {
   await assertApplication(appId);
   const [rows] = await storePool.query(
-    'SELECT * FROM business_rules WHERE application_id = ? ORDER BY seq IS NULL, seq, name', [appId]);
+    'SELECT * FROM business_rules WHERE application_id = ? ORDER BY execution_order IS NULL, execution_order, name', [appId]);
   return rows.map(brRowToDto);
 }
 
 async function getBrRow(brId) {
-  const [rows] = await storePool.query('SELECT * FROM business_rules WHERE id = ?', [brId]);
+  const [rows] = await storePool.query('SELECT * FROM business_rules WHERE creation_index = ?', [brId]);
   return rows[0] || null;
 }
 
@@ -505,14 +517,21 @@ async function createBusinessRule(appId, input) {
   await assertApplication(appId);
   const b = normaliseBr(input);
   const brId = crypto.randomUUID();
+  // execution_order is global within an application; default a new rule to the end.
+  let executionOrder = b.executionOrder;
+  if (executionOrder == null) {
+    const [[{ next }]] = await storePool.query(
+      'SELECT COALESCE(MAX(execution_order), 0) + 1 AS next FROM business_rules WHERE application_id = ?', [appId]);
+    executionOrder = next;
+  }
   try {
     await storePool.query(
       `INSERT INTO business_rules
-         (id, application_id, name, epic_id, seq, rule, rationale, category, features, modifies_features, depends_on, touches, delta)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [brId, appId, b.name, b.epicId, b.seq, b.rule, b.rationale, b.category,
+         (creation_index, application_id, name, epic_id, execution_order, rule, rationale, category, features, modifies_features, depends_on, touches, delta, needs_to_be_established)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [brId, appId, b.name, b.epicId, executionOrder, b.rule, b.rationale, b.category,
         toJsonText(b.features), toJsonText(b.modifiesFeatures), toJsonText(b.dependsOn),
-        toJsonText(b.touches), toJsonText(b.delta)],
+        toJsonText(b.touches), toJsonText(b.delta), b.needsToBeEstablished ? 1 : 0],
     );
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') throw badRequest(`A business rule named "${b.name}" already exists`);
@@ -529,12 +548,12 @@ async function updateBusinessRule(appId, brId, input) {
   try {
     [res] = await storePool.query(
       `UPDATE business_rules SET
-         name = ?, epic_id = ?, seq = ?, rule = ?, rationale = ?, category = ?,
-         features = ?, modifies_features = ?, depends_on = ?, touches = ?, delta = ?
-       WHERE id = ? AND application_id = ?`,
-      [b.name, b.epicId, b.seq, b.rule, b.rationale, b.category,
+         name = ?, epic_id = ?, execution_order = ?, rule = ?, rationale = ?, category = ?,
+         features = ?, modifies_features = ?, depends_on = ?, touches = ?, delta = ?, needs_to_be_established = ?
+       WHERE creation_index = ? AND application_id = ?`,
+      [b.name, b.epicId, b.executionOrder, b.rule, b.rationale, b.category,
         toJsonText(b.features), toJsonText(b.modifiesFeatures), toJsonText(b.dependsOn),
-        toJsonText(b.touches), toJsonText(b.delta), brId, appId],
+        toJsonText(b.touches), toJsonText(b.delta), b.needsToBeEstablished ? 1 : 0, brId, appId],
     );
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') throw badRequest(`A business rule named "${b.name}" already exists`);
@@ -548,25 +567,19 @@ async function updateBusinessRule(appId, brId, input) {
 async function deleteBusinessRule(appId, brId) {
   await assertApplication(appId);
   const [res] = await storePool.query(
-    'DELETE FROM business_rules WHERE id = ? AND application_id = ?', [brId, appId]);
+    'DELETE FROM business_rules WHERE creation_index = ? AND application_id = ?', [brId, appId]);
   return res.affectedRows > 0;
 }
 
 // ── Additional agent information (extra context attached to a Business Rule) ───
-// Numeric-aware seq compare: nulls sort last. Mirrors the Dewey ordering the BRs
-// use elsewhere so "seq >= referenced seq" means "development has reached this BR".
-function seqCompare(a, b) {
+// Numeric compare for execution_order: nulls sort last. Mirrors the ordering the
+// BRs use elsewhere so "execution_order >= referenced order" means "development
+// has reached this BR".
+function executionOrderCompare(a, b) {
   if (a == null && b == null) return 0;
   if (a == null) return 1;
   if (b == null) return -1;
-  const A = String(a).split('.').map(Number);
-  const B = String(b).split('.').map(Number);
-  for (let i = 0; i < Math.max(A.length, B.length); i++) {
-    const x = Number.isFinite(A[i]) ? A[i] : -1;
-    const y = Number.isFinite(B[i]) ? B[i] : -1;
-    if (x !== y) return x - y;
-  }
-  return 0;
+  return Number(a) - Number(b);
 }
 
 function agentInfoRowToDto(r) {
@@ -575,22 +588,22 @@ function agentInfoRowToDto(r) {
     businessRuleId: r.business_rule_id,
     description: r.description,
     brName: r.br_name ?? null,
-    brSeq: r.br_seq ?? null,
+    brExecutionOrder: r.br_execution_order ?? null,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
 }
 
-// Every read joins the BR so callers get the referenced rule's name + seq.
+// Every read joins the BR so callers get the referenced rule's name + execution order.
 const AGENT_INFO_SELECT = `
-  SELECT ai.*, br.name AS br_name, br.seq AS br_seq
+  SELECT ai.*, br.name AS br_name, br.execution_order AS br_execution_order
     FROM br_additional_agent_information ai
-    JOIN business_rules br ON br.id = ai.business_rule_id`;
+    JOIN business_rules br ON br.creation_index = ai.business_rule_id`;
 
 async function listAgentInfo(appId) {
   await assertApplication(appId);
   const [rows] = await storePool.query(
-    `${AGENT_INFO_SELECT} WHERE ai.application_id = ? ORDER BY br.seq IS NULL, br.seq, ai.created_at`, [appId]);
+    `${AGENT_INFO_SELECT} WHERE ai.application_id = ? ORDER BY br.execution_order IS NULL, br.execution_order, ai.created_at`, [appId]);
   return rows.map(agentInfoRowToDto);
 }
 
@@ -645,81 +658,68 @@ async function deleteAgentInfo(appId, infoId) {
 }
 
 // The develop-time query: every agent-info entry whose referenced BR has already
-// been reached by development, i.e. referenced BR seq <= the seq under development.
-// Filtered in JS so the Dewey seq ordering matches the rest of the app.
-async function listAgentInfoUpToSeq(appId, seq) {
+// been reached by development, i.e. referenced BR execution_order <= the order
+// under development.
+async function listAgentInfoUpToExecutionOrder(appId, executionOrder) {
   const all = await listAgentInfo(appId);
-  return all.filter((a) => seqCompare(a.brSeq, seq) <= 0);
+  return all.filter((a) => executionOrderCompare(a.brExecutionOrder, executionOrder) <= 0);
 }
 
-// ── Methodology files (agents + commands) — store DB is source of truth ───────
-// Seed once from disk; thereafter the store DB is authoritative. Edits round-trip
-// to disk too so Claude Code keeps working against .claude/ without a build step.
-function methodologySubdir(kind) {
-  const sub = METHODOLOGY_KINDS[kind];
-  if (!sub) throw badRequest(`unknown methodology kind: ${kind}`);
-  return sub;
+// ── BR snapshots (point-in-time copies of the whole Epic + BR set) ────────────
+// A snapshot freezes the current epics and business rules as JSON so it can be
+// diffed against the live set later. The list view returns only metadata (never
+// the heavy JSON bodies); the detail read parses them back into DTO arrays.
+function snapshotMetaRowToDto(r) {
+  return {
+    id: r.id,
+    label: r.label,
+    epicCount: r.epic_count,
+    ruleCount: r.rule_count,
+    createdAt: r.created_at,
+  };
 }
 
-function assertFileName(name) {
-  if (!/^[A-Za-z0-9._-]+$/.test(String(name || ''))) throw badRequest('invalid file name');
-  return name;
+async function listSnapshots(appId) {
+  await assertApplication(appId);
+  const [rows] = await storePool.query(
+    'SELECT id, label, epic_count, rule_count, created_at FROM br_snapshots WHERE application_id = ? ORDER BY created_at DESC, id', [appId]);
+  return rows.map(snapshotMetaRowToDto);
 }
 
-async function seedMethodology() {
-  try {
-    const [[{ n }]] = await storePool.query('SELECT COUNT(*) AS n FROM methodology_files');
-    if (n > 0) return; // already seeded / user-managed
-    for (const [kind, sub] of Object.entries(METHODOLOGY_KINDS)) {
-      let entries = [];
-      try { entries = await fs.promises.readdir(path.join(CLAUDE_DIR, sub)); } catch { continue; }
-      for (const name of entries.filter(f => f.endsWith('.md'))) {
-        const content = await fs.promises.readFile(path.join(CLAUDE_DIR, sub, name), 'utf8');
-        await storePool.query(
-          'INSERT INTO methodology_files (kind, name, content) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE content = VALUES(content)',
-          [kind, name, content],
-        );
-      }
-    }
-  } catch (err) {
-    console.warn(`Methodology seed skipped: ${err.message}`);
-  }
-}
-
-async function listMethodologyFiles() {
-  ensureReady();
-  const [rows] = await storePool.query('SELECT kind, name, updated_at FROM methodology_files ORDER BY kind, name');
-  return rows.map(r => ({ kind: r.kind, name: r.name, updatedAt: r.updated_at }));
-}
-
-async function getMethodologyFile(kind, name) {
-  ensureReady();
-  methodologySubdir(kind);
-  assertFileName(name);
-  const [rows] = await storePool.query('SELECT kind, name, content, updated_at FROM methodology_files WHERE kind = ? AND name = ?', [kind, name]);
-  if (!rows.length) return null;
+async function getSnapshot(appId, snapId) {
+  await assertApplication(appId);
+  const [rows] = await storePool.query(
+    'SELECT * FROM br_snapshots WHERE id = ? AND application_id = ?', [snapId, appId]);
   const r = rows[0];
-  return { kind: r.kind, name: r.name, content: r.content ?? '', updatedAt: r.updated_at };
+  if (!r) return null;
+  return {
+    ...snapshotMetaRowToDto(r),
+    epics: fromJsonText(r.epics, []),
+    rules: fromJsonText(r.rules, []),
+  };
 }
 
-async function saveMethodologyFile(kind, name, content) {
-  ensureReady();
-  const sub = methodologySubdir(kind);
-  assertFileName(name);
-  if (typeof content !== 'string') throw badRequest('content (string) required');
+// Capture the CURRENT epics + business rules as a new snapshot. The label is the
+// only caller-supplied field; everything else is read live from the DB so a
+// snapshot always reflects the true state at capture time.
+async function createSnapshot(appId, input) {
+  await assertApplication(appId);
+  const label = String(input?.label ?? '').trim() || 'Snapshot';
+  const epics = await listEpics(appId);
+  const rules = await listBusinessRules(appId);
+  const snapId = crypto.randomUUID();
   await storePool.query(
-    'INSERT INTO methodology_files (kind, name, content) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE content = VALUES(content)',
-    [kind, name, content],
+    'INSERT INTO br_snapshots (id, application_id, label, epics, rules, epic_count, rule_count) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [snapId, appId, label, toJsonText(epics), toJsonText(rules), epics.length, rules.length],
   );
-  // Best-effort write-through to disk so the live .claude/ copy stays in sync.
-  try {
-    const dir = path.join(CLAUDE_DIR, sub);
-    await fs.promises.mkdir(dir, { recursive: true });
-    await fs.promises.writeFile(path.join(dir, name), content, 'utf8');
-  } catch (err) {
-    console.warn(`Methodology disk write-through failed for ${kind}/${name}: ${err.message}`);
-  }
-  return getMethodologyFile(kind, name);
+  return getSnapshot(appId, snapId);
+}
+
+async function deleteSnapshot(appId, snapId) {
+  await assertApplication(appId);
+  const [res] = await storePool.query(
+    'DELETE FROM br_snapshots WHERE id = ? AND application_id = ?', [snapId, appId]);
+  return res.affectedRows > 0;
 }
 
 module.exports = {
@@ -729,6 +729,6 @@ module.exports = {
   listEpics, createEpic, updateEpic, deleteEpic,
   listNotes, createNote, updateNote, deleteNote,
   listBusinessRules, createBusinessRule, updateBusinessRule, deleteBusinessRule,
-  listAgentInfo, createAgentInfo, updateAgentInfo, deleteAgentInfo, listAgentInfoUpToSeq,
-  listMethodologyFiles, getMethodologyFile, saveMethodologyFile,
+  listAgentInfo, createAgentInfo, updateAgentInfo, deleteAgentInfo, listAgentInfoUpToExecutionOrder,
+  listSnapshots, getSnapshot, createSnapshot, deleteSnapshot,
 };

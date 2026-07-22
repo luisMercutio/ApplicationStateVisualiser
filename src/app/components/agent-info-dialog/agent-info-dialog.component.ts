@@ -14,7 +14,7 @@ import { selectAgentInfo } from '../../store/app-data/app-data.selectors';
 
 export interface AgentInfoDialogData {
   rule: AppBusinessRule;
-  applicationId: string;
+  connectionId: string;
 }
 
 // Manage the Additional Agent Information attached to one Business Rule. These
@@ -31,7 +31,7 @@ export interface AgentInfoDialogData {
       <p class="hint">
         Extra context for the AI agents. Each entry is loaded into the developer agents
         at the start of a development task once the BR being built has reached this rule
-        (seq ≥ {{ data.rule.seq || '—' }}).
+        (execution order ≥ {{ data.rule.executionOrder ?? '—' }}).
       </p>
 
       @for (e of entries(); track e.id) {
@@ -84,7 +84,7 @@ export class AgentInfoDialogComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
     // Live-bind to the store so create/update/delete reflect immediately.
     this.sub = this.store.select(selectAgentInfo).subscribe((all) =>
-      this.entries.set(all.filter((i) => i.businessRuleId === this.data.rule.id)),
+      this.entries.set(all.filter((i) => i.businessRuleId === this.data.rule.creationIndex)),
     );
   }
 
@@ -103,19 +103,19 @@ export class AgentInfoDialogComponent implements OnInit, OnDestroy {
     const description = (this.drafts()[e.id] ?? '').trim();
     if (!description || description === e.description) return;
     this.store.dispatch(AppDataActions.updateAgentInfo({
-      applicationId: this.data.applicationId, infoId: e.id, input: { businessRuleId: e.businessRuleId, description },
+      connectionId: this.data.connectionId, infoId: e.id, input: { businessRuleId: e.businessRuleId, description },
     }));
   }
 
   remove(e: BrAgentInfo): void {
-    this.store.dispatch(AppDataActions.deleteAgentInfo({ applicationId: this.data.applicationId, infoId: e.id }));
+    this.store.dispatch(AppDataActions.deleteAgentInfo({ connectionId: this.data.connectionId, infoId: e.id }));
   }
 
   add(): void {
     const description = this.newText.trim();
     if (!description) return;
     this.store.dispatch(AppDataActions.createAgentInfo({
-      applicationId: this.data.applicationId, input: { businessRuleId: this.data.rule.id, description },
+      connectionId: this.data.connectionId, input: { businessRuleId: this.data.rule.creationIndex, description },
     }));
     this.newText = '';
   }

@@ -27,9 +27,10 @@ interface Group {
 }
 
 /**
- * Edit the agent + command files that drive the methodology, backed by the MASTER
- * database (edits also write through to .claude/ on disk). Same UX as the file-based
- * Resources editor, but the source of truth is the DB, not the filesystem.
+ * Browse and edit the agent + command files that drive the methodology. They are
+ * served straight from .claude/ on disk — the filesystem is the source of truth
+ * (exactly where Claude Code finds them) — so the editor supports full CRUD:
+ * create, edit, rename and delete files, each a direct filesystem operation.
  */
 @Component({
   selector: 'app-methodology-editor',
@@ -39,18 +40,26 @@ interface Group {
     <div class="res-wrap">
       <div class="res-tree">
         <div class="tree-head">
-          <span>Methodology (DB)</span>
+          <span>Methodology</span>
           <button mat-icon-button class="sm" (click)="reload()" matTooltip="Reload"><mat-icon>refresh</mat-icon></button>
         </div>
         @if (error()) { <div class="tree-err">{{ error() }}</div> }
         @for (g of groups(); track g.kind) {
-          <div class="tree-dir"><mat-icon>folder</mat-icon> {{ g.label }} <span class="cnt">{{ g.files.length }}</span></div>
+          <div class="tree-dir">
+            <mat-icon>folder</mat-icon> {{ g.label }}
+            <span class="cnt">{{ g.files.length }}</span>
+            <button mat-icon-button class="xs" (click)="newFile(g.kind)" matTooltip="New {{ g.kind }}"><mat-icon>add</mat-icon></button>
+          </div>
           @for (f of g.files; track f.name) {
             <div class="tree-file" [class.active]="key(g.kind, f.name) === selectedKey()"
                  (click)="open(g.kind, f.name)">
               <mat-icon>description</mat-icon>
               <span class="fname">{{ f.name }}</span>
               @if (dirtyKeys().has(key(g.kind, f.name))) { <span class="dot" matTooltip="Unsaved changes"></span> }
+              <span class="row-actions">
+                <button mat-icon-button class="xs" (click)="rename(g.kind, f.name, $event)" matTooltip="Rename"><mat-icon>drive_file_rename_outline</mat-icon></button>
+                <button mat-icon-button class="xs" (click)="remove(g.kind, f.name, $event)" matTooltip="Delete"><mat-icon>delete</mat-icon></button>
+              </span>
             </div>
           }
         }
@@ -96,8 +105,13 @@ interface Group {
     .tree-file:hover { background: #eceff1; }
     .tree-file.active { background: #e3f2fd; color: #1565c0; font-weight: 600; }
     .tree-dir mat-icon, .tree-file mat-icon { font-size: 16px; width: 16px; height: 16px; }
-    .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .dot { width: 7px; height: 7px; border-radius: 50%; background: #ff9800; margin-left: auto; flex-shrink: 0; }
+    .fname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: #ff9800; flex-shrink: 0; }
+    .row-actions { display: none; align-items: center; flex-shrink: 0; margin-left: auto; }
+    .tree-file:hover .row-actions { display: inline-flex; }
+    .xs { width: 22px; height: 22px; line-height: 22px; padding: 0; }
+    .xs mat-icon { font-size: 15px; width: 15px; height: 15px; }
+    .tree-dir .xs { margin-left: 4px; color: #999; }
     .res-editor { flex: 1; display: flex; flex-direction: column; min-width: 0; }
     .ed-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid #e0e0e0; }
     .ed-path { font-family: monospace; font-size: 12px; color: #555; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -111,6 +125,16 @@ interface Group {
     .md-body ::ng-deep code { background: #f5f5f5; padding: 2px 4px; border-radius: 3px; font-size: 12px; }
     .md-body ::ng-deep table { border-collapse: collapse; }
     .md-body ::ng-deep th, .md-body ::ng-deep td { border: 1px solid #e0e0e0; padding: 6px 10px; }
+
+    /* Mobile: a fixed 230px sidebar leaves almost no room for the editor, so
+       stack the file tree above the editor and cap its height. */
+    @media (max-width: 768px) {
+      .res-wrap { flex-direction: column; }
+      .res-tree { width: 100%; max-height: 40%; flex-shrink: 0;
+                  border-right: none; border-bottom: 1px solid #e0e0e0; }
+      /* No hover on touch: keep per-file actions always visible. */
+      .row-actions { display: inline-flex; }
+    }
   `],
 })
 export class MethodologyEditorComponent implements OnInit, OnDestroy {
@@ -176,6 +200,34 @@ export class MethodologyEditorComponent implements OnInit, OnDestroy {
     }
   }
 
+  newFile(kind: MethodologyKind): void {
+    const raw = window.prompt(`New ${kind} file name (e.g. my-${kind}.md):`);
+    if (raw == null) return;
+    const name = normaliseName(raw);
+    if (!name) { this.error.set('Invalid name — use letters, digits, . _ - with a .md extension'); return; }
+    if (this.groups().some((g) => g.kind === kind && g.files.some((f) => f.name === name))) {
+      this.error.set(`A ${kind} named "${name}" already exists`);
+      return;
+    }
+    this.store.dispatch(MethodologyActions.createFile({ kind, name, content: starterTemplate(kind, name) }));
+  }
+
+  rename(kind: MethodologyKind, name: string, ev: Event): void {
+    ev.stopPropagation();
+    const raw = window.prompt(`Rename ${name} to:`, name);
+    if (raw == null) return;
+    const newName = normaliseName(raw);
+    if (!newName) { this.error.set('Invalid name — use letters, digits, . _ - with a .md extension'); return; }
+    if (newName === name) return;
+    this.store.dispatch(MethodologyActions.renameFile({ kind, name, newName }));
+  }
+
+  remove(kind: MethodologyKind, name: string, ev: Event): void {
+    ev.stopPropagation();
+    if (!window.confirm(`Delete ${kind} "${name}"? This removes the file from .claude/${kind}s/.`)) return;
+    this.store.dispatch(MethodologyActions.deleteFile({ kind, name }));
+  }
+
   private bindKey(key: string | null): void {
     this.selectedKey.set(key);
     this.preview.set(false);
@@ -200,6 +252,23 @@ export class MethodologyEditorComponent implements OnInit, OnDestroy {
       }),
     );
   }
+}
+
+/** Trim, ensure a .md extension, and validate against the server's name rule. */
+function normaliseName(raw: string): string | null {
+  let n = raw.trim();
+  if (!n) return null;
+  if (!n.toLowerCase().endsWith('.md')) n += '.md';
+  return /^[A-Za-z0-9._-]+\.md$/.test(n) && !n.includes('..') ? n : null;
+}
+
+/** Starter content for a newly created file so the editor isn't blank. */
+function starterTemplate(kind: MethodologyKind, name: string): string {
+  const base = name.replace(/\.md$/i, '');
+  if (kind === 'agent') {
+    return `---\nname: ${base}\ndescription: \ntools: Read, Write, Edit, Glob, Grep\n---\n\n# ${base}\n\nDescribe what this agent does and when it should be used.\n`;
+  }
+  return `# /${base}\n\nDescribe what this command does.\n`;
 }
 
 function toGroups(files: MethodologyFileMeta[]): Group[] {

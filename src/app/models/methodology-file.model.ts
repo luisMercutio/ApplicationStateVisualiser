@@ -1,6 +1,6 @@
-// Agent + command files, stored in and served from the MASTER database. The app
-// edits them in place (write-through keeps the on-disk .claude/ copy in sync so
-// Claude Code still sees them). `kind` selects the .claude subdirectory.
+// Agent + command files, served straight from .claude/ on disk (the source of
+// truth Claude Code reads). The app creates, edits, renames and deletes them as
+// direct filesystem operations. `kind` selects the .claude subdirectory.
 
 export type MethodologyKind = 'agent' | 'command';
 

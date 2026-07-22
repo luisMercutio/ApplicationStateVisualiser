@@ -1,7 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { Actions, createEffect, ofType } from '@ngrx/effects';
 import { Store } from '@ngrx/store';
-import { mergeMap, map, catchError, withLatestFrom, filter } from 'rxjs/operators';
+import { mergeMap, switchMap, map, catchError, withLatestFrom, filter } from 'rxjs/operators';
 import { of } from 'rxjs';
 import { MethodologyActions, methodologyKey } from './methodology.actions';
 import { DbService } from '../../services/db.service';
@@ -46,6 +46,58 @@ export class MethodologyEffects {
         this.db.saveMethodology(kind, name, content).pipe(
           map(() => MethodologyActions.saveFileSuccess({ key: methodologyKey(kind, name), content })),
           catchError((err) => of(MethodologyActions.saveFileFailure({ key: methodologyKey(kind, name), error: errMsg(err) }))),
+        ),
+      ),
+    ),
+  );
+
+  // Create the file, refresh the list, then open it (seeding its content locally
+  // so the editor shows it immediately without a second round-trip).
+  createFile$ = createEffect(() =>
+    this.actions$.pipe(
+      ofType(MethodologyActions.createFile),
+      mergeMap(({ kind, name, content }) =>
+        this.db.saveMethodology(kind, name, content).pipe(
+          switchMap(() => [
+            MethodologyActions.loadFiles(),
+            MethodologyActions.selectFile({ key: methodologyKey(kind, name) }),
+            MethodologyActions.loadFileSuccess({ key: methodologyKey(kind, name), content }),
+          ]),
+          catchError((err) => of(MethodologyActions.createFileFailure({ error: errMsg(err) }))),
+        ),
+      ),
+    ),
+  );
+
+  deleteFile$ = createEffect(() =>
+    this.actions$.pipe(
+      ofType(MethodologyActions.deleteFile),
+      mergeMap(({ kind, name }) =>
+        this.db.deleteMethodology(kind, name).pipe(
+          switchMap(() => [
+            MethodologyActions.deleteFileSuccess({ key: methodologyKey(kind, name) }),
+            MethodologyActions.loadFiles(),
+          ]),
+          catchError((err) => of(MethodologyActions.deleteFileFailure({ key: methodologyKey(kind, name), error: errMsg(err) }))),
+        ),
+      ),
+    ),
+  );
+
+  // Rename on disk, refresh the list, drop the old store entry, then open the new
+  // name (loadFile fetches its content since the new key isn't cached yet).
+  renameFile$ = createEffect(() =>
+    this.actions$.pipe(
+      ofType(MethodologyActions.renameFile),
+      mergeMap(({ kind, name, newName }) =>
+        this.db.renameMethodology(kind, name, newName).pipe(
+          switchMap(() => [
+            MethodologyActions.renameFileSuccess({ oldKey: methodologyKey(kind, name) }),
+            MethodologyActions.loadFiles(),
+            MethodologyActions.selectFile({ key: methodologyKey(kind, newName) }),
+            MethodologyActions.loadFile({ kind, name: newName }),
+          ]),
+          catchError((err) => of(MethodologyActions.renameFileFailure({ key: methodologyKey(kind, name), error: errMsg(err) }))),
         ),
       ),
     ),
