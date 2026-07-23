@@ -20,6 +20,12 @@ export class WorkspaceService {
   private readonly brDiagram = signal<string>('');
   readonly brDiagramId = this.brDiagram.asReadonly();
 
+  // The Business Rule (its creationIndex) the Tech Specs page should focus on.
+  // The Tech Specs page shows exactly one BR's technical spec at a time; the
+  // chosen rule reaches it through this signal (same pattern as the Diagram view).
+  private readonly techSpec = signal<string>('');
+  readonly techSpecBrId = this.techSpec.asReadonly();
+
   // Switch to the Terminal page focused on `session`.
   openTerminal(session: string): void {
     this.terminalSession.set(session);
@@ -30,6 +36,12 @@ export class WorkspaceService {
   openBrDiagram(brId: string): void {
     this.brDiagram.set(brId);
     this.page.set('br-diagram');
+  }
+
+  // Switch to the Tech Specs page focused on the rule `brId` (its creationIndex).
+  openTechnicalSpec(brId: string): void {
+    this.techSpec.set(brId);
+    this.page.set('technical-specs');
   }
 
   // Read the requested session and clear it, so it only takes effect once.

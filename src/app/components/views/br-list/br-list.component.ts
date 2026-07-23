@@ -22,7 +22,6 @@ import { NoteFormDialogComponent, NoteDialogData } from '../../note-form-dialog/
 import { EpicFormDialogComponent } from '../../epic-form-dialog/epic-form-dialog.component';
 import { AgentInfoDialogComponent, AgentInfoDialogData } from '../../agent-info-dialog/agent-info-dialog.component';
 import { SnapshotManagerDialogComponent, SnapshotManagerDialogData } from '../../snapshot-manager-dialog/snapshot-manager-dialog.component';
-import { TechnicalSpecDialogComponent, TechnicalSpecDialogData } from '../../technical-spec-dialog/technical-spec-dialog.component';
 import { WorkspaceService } from '../../../services/workspace.service';
 
 interface RuleList {
@@ -358,12 +357,9 @@ export class BrListComponent implements OnInit, OnDestroy {
     this.dialog.open(SnapshotManagerDialogComponent, { data });
   }
 
-  // Open the per-BR technical-spec dialog (entries + artifacts).
+  // Route to the Tech Specs page with this BR selected (its full technical spec).
   openTechnicalSpec(rule: AppBusinessRule): void {
-    const id = this.connId();
-    if (!id) return;
-    const data: TechnicalSpecDialogData = { rule, connectionId: id };
-    this.dialog.open(TechnicalSpecDialogComponent, { data });
+    this.workspace.openTechnicalSpec(rule.creationIndex);
   }
 
   // Navigate to the dedicated per-BR diagram view (renders the BR's technical

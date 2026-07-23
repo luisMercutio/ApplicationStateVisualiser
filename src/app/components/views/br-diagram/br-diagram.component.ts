@@ -2,7 +2,6 @@ import { Component, ElementRef, computed, effect, inject, viewChild } from '@ang
 import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { MatTooltipModule } from '@angular/material/tooltip';
-import { MatDialog } from '@angular/material/dialog';
 import { Store } from '@ngrx/store';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { AppBusinessRule } from '../../../models/app-data.model';
@@ -13,7 +12,6 @@ import { selectSpecByRuleId } from '../../../store/technical-specs/technical-spe
 import { selectActiveConnection } from '../../../store/connections/connections.selectors';
 import { WorkspaceService } from '../../../services/workspace.service';
 import { MermaidService } from '../../../services/mermaid.service';
-import { TechnicalSpecDialogComponent, TechnicalSpecDialogData } from '../../technical-spec-dialog/technical-spec-dialog.component';
 
 /**
  * A single Business Rule rendered as a diagram: the rule sits at the centre with
@@ -144,7 +142,6 @@ import { TechnicalSpecDialogComponent, TechnicalSpecDialogData } from '../../tec
 })
 export class BrDiagramComponent {
   private store = inject(Store);
-  private dialog = inject(MatDialog);
   private workspace = inject(WorkspaceService);
   private mermaid = inject(MermaidService);
 
@@ -187,10 +184,7 @@ export class BrDiagramComponent {
 
   openSpec(): void {
     const r = this.rule();
-    const conn = this.active();
-    if (!r || !conn) return;
-    const data: TechnicalSpecDialogData = { rule: r, connectionId: conn.id };
-    this.dialog.open(TechnicalSpecDialogComponent, { data });
+    if (r) this.workspace.openTechnicalSpec(r.creationIndex);
   }
 }
 
