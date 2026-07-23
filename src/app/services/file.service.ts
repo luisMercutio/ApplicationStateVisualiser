@@ -73,6 +73,19 @@ export class FileService {
       `${API_BASE}/api/claude/sessions/${encodeURIComponent(session)}/kill`, {});
   }
 
+  // Archive a dead session: remove its git worktree(s)+branch(es); the conversation
+  // is filed away under .claude/conversations/archived/ (kept on disk).
+  archiveClaudeSession(session: string): Observable<{ session: string; mode: string }> {
+    return this.http.post<{ session: string; mode: string }>(
+      `${API_BASE}/api/claude/sessions/${encodeURIComponent(session)}/archive`, {});
+  }
+
+  // Delete a dead session entirely: git worktree(s)+branch(es) AND the conversation.
+  deleteClaudeSession(session: string): Observable<{ session: string; mode: string }> {
+    return this.http.delete<{ session: string; mode: string }>(
+      `${API_BASE}/api/claude/sessions/${encodeURIComponent(session)}`);
+  }
+
   // The archived conversation for a session, reduced to prompt/answer turns only.
   getClaudeConversation(session: string):
     Observable<{ session: string; sessionId: string; messages: ConversationMessage[] }> {

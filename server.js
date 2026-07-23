@@ -520,6 +520,81 @@ app.post('/api/claude/sessions/:session/kill', async (req, res) => {
   }
 });
 
+// Remove a dead session's git footprint: every ../ASV-worktrees/<slug>-YYYYMMDD
+// worktree for this BR and the matching claude/<slug>[-YYYYMMDD] branches. Only
+// ever touches paths under ASV-worktrees, so the main and test worktrees are never
+// at risk (see the FIXED RULE in CLAUDE.md).
+async function removeSessionGitFootprint(slug) {
+  const root = await mainRepoRoot();
+  const repoWsl = toWslPath(root);
+  const removedWorktrees = [];
+  const removedBranches = [];
+
+  let dirs = [];
+  try {
+    const entries = await fs.readdir(await asvWorktreesDir(), { withFileTypes: true });
+    dirs = entries.filter(e => e.isDirectory() && baseSlug(e.name) === slug).map(e => e.name);
+  } catch { /* no worktrees dir */ }
+  for (const name of dirs) {
+    const wtWsl = toWslPath(path.resolve(root, '..', 'ASV-worktrees', name));
+    if (!/\/ASV-worktrees\//.test(wtWsl)) continue; // guard: never outside ASV-worktrees
+    await wsl(['git', '-C', repoWsl, 'worktree', 'remove', '--force', wtWsl]).catch(() => {});
+    removedWorktrees.push(name);
+  }
+
+  // Delete the branch(es) for this slug (claude/<slug> and claude/<slug>-YYYYMMDD).
+  const listed = await wsl(['git', '-C', repoWsl, 'branch', '--list', `claude/${slug}`, `claude/${slug}-*`])
+    .catch(() => ({ stdout: '' }));
+  const branches = listed.stdout.split(/\r?\n/).map(l => l.replace(/^[*+]?\s*/, '').trim()).filter(Boolean)
+    .filter(b => baseSlug(b.replace(/^claude\//, '')) === slug);
+  for (const b of branches) {
+    await wsl(['git', '-C', repoWsl, 'branch', '-D', b]).catch(() => {});
+    removedBranches.push(b);
+  }
+  return { removedWorktrees, removedBranches };
+}
+
+// Archive or delete a DEAD session's cleanup. Archive files the transcript(s) away
+// under .claude/conversations/archived/ (kept on disk); delete removes them.
+async function archiveOrDeleteSession(req, res, deleteTranscript) {
+  try {
+    const session = String(req.params.session || '');
+    if (!SESSION_RE.test(session) || !session.startsWith('claude-')) {
+      return res.status(400).json({ error: `invalid session name: ${session}` });
+    }
+    const slug = session.slice('claude-'.length);
+    if (await tmuxHasSession(session)) {
+      return res.status(409).json({ error: 'session is running — kill it before archiving or deleting' });
+    }
+
+    const { removedWorktrees, removedBranches } = await removeSessionGitFootprint(slug);
+
+    const dir = await conversationsDir();
+    const list = (await listArchives()).bySlug.get(slug) || [];
+    if (deleteTranscript) {
+      for (const t of list) await fs.unlink(path.join(dir, t.file)).catch(() => {});
+    } else {
+      const archivedDir = path.join(dir, 'archived');
+      await fs.mkdir(archivedDir, { recursive: true });
+      for (const t of list) await fs.rename(path.join(dir, t.file), path.join(archivedDir, t.file)).catch(() => {});
+    }
+
+    res.json({
+      session, mode: deleteTranscript ? 'deleted' : 'archived',
+      removedWorktrees, removedBranches, transcripts: list.length,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+}
+
+// Archive a dead session: drop its git worktree(s)+branch(es), keep the conversation
+// (moved under .claude/conversations/archived/). The row leaves the list.
+app.post('/api/claude/sessions/:session/archive', (req, res) => archiveOrDeleteSession(req, res, false));
+
+// Delete a dead session entirely: git worktree(s)+branch(es) AND the conversation.
+app.delete('/api/claude/sessions/:session', (req, res) => archiveOrDeleteSession(req, res, true));
+
 // ── Git: history + worktrees ──────────────────────────────────────────────────
 // Read-only views over the repo's OWN git, for the in-app Git page. Everything
 // runs through the same WSL git used for Claude worktrees, so the worktree paths

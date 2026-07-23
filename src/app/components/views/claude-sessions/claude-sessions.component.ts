@@ -89,6 +89,10 @@ interface Row {
                 <button mat-menu-item (click)="viewConversation(row)" [disabled]="!row.hasTranscript">
                   <mat-icon>forum</mat-icon> View conversation
                 </button>
+                @if (!row.running) {
+                  <button mat-menu-item (click)="archive(row)" [disabled]="busy() === row.session"><mat-icon>archive</mat-icon> Archive (keep conversation)</button>
+                  <button mat-menu-item (click)="remove(row)" [disabled]="busy() === row.session"><mat-icon>delete</mat-icon> Delete</button>
+                }
               </mat-menu>
             </div>
           }
@@ -229,6 +233,43 @@ export class ClaudeSessionsComponent implements OnInit, OnDestroy {
     this.dialog.open(ClaudeConversationDialogComponent, {
       data: { session: row.session, brName: row.brName },
       width: '760px', maxWidth: '94vw', autoFocus: false,
+    });
+  }
+
+  // Archive a dead session: remove its git worktree(s)+branch(es); the conversation
+  // is filed away under .claude/conversations/archived/ and the row leaves the list.
+  archive(row: Row): void {
+    if (this.busy()) return;
+    if (!confirm(`Archive ${row.session}? Its git worktree and branch are removed; the saved conversation is kept (filed under .claude/conversations/archived/).`)) return;
+    this.busy.set(row.session);
+    this.file.archiveClaudeSession(row.session).subscribe({
+      next: () => {
+        this.busy.set('');
+        this.snack.open(`Archived ${row.session}`, 'OK', { duration: 4000 });
+        this.refresh();
+      },
+      error: err => {
+        this.busy.set('');
+        this.snack.open(err?.error?.error ?? err?.message ?? 'Archive failed', 'Dismiss', { duration: 6000 });
+      },
+    });
+  }
+
+  // Delete a dead session entirely: git worktree(s)+branch(es) AND the conversation.
+  remove(row: Row): void {
+    if (this.busy()) return;
+    if (!confirm(`Delete ${row.session} completely? Its git worktree, branch, and saved conversation are permanently removed. This cannot be undone.`)) return;
+    this.busy.set(row.session);
+    this.file.deleteClaudeSession(row.session).subscribe({
+      next: () => {
+        this.busy.set('');
+        this.snack.open(`Deleted ${row.session}`, 'OK', { duration: 4000 });
+        this.refresh();
+      },
+      error: err => {
+        this.busy.set('');
+        this.snack.open(err?.error?.error ?? err?.message ?? 'Delete failed', 'Dismiss', { duration: 6000 });
+      },
     });
   }
 }
