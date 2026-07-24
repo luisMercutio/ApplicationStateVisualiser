@@ -596,39 +596,79 @@ app.post('/api/claude/sessions/:session/archive', (req, res) => archiveOrDeleteS
 app.delete('/api/claude/sessions/:session', (req, res) => archiveOrDeleteSession(req, res, true));
 
 // ── Git: history + worktrees ──────────────────────────────────────────────────
-// Read-only views over the repo's OWN git, for the in-app Git page. Everything
-// runs through the same WSL git used for Claude worktrees, so the worktree paths
-// shown here line up with the sessions page. Field separator \x1f (unit sep) can't
-// occur in commit metadata, so parsing stays trivial.
+// Read-only views over the repo's OWN git for the in-app Git page, plus the
+// mutating actions below (drop a commit, remove a worktree, merge one branch into
+// another). These run through WINDOWS git (git.exe), not WSL git: the repo's
+// worktrees were created by Windows git and store Windows paths, so WSL git lists
+// every one of them as "prunable" (its gitdir pointer is a C:\ path WSL can't
+// resolve) and can't operate on them. Windows git sees them correctly. Field
+// separator \x1f (unit sep) can't occur in commit metadata, so parsing stays trivial.
 const GIT_LOG_FMT = ['%H', '%h', '%an', '%ae', '%at', '%D', '%s'].join('%x1f');
+const REF_RE = /^[A-Za-z0-9._/-]+$/;      // branch name or ref, no room for extra args
+const SHA_RE = /^[0-9a-fA-F]{4,40}$/;     // abbreviated or full commit sha
+
+// Run Windows git (no shell). Longer timeout than wsl(): a rebase/merge can take
+// a moment. Resolves with { stdout, stderr }; rejects with those attached on failure.
+function gitWin(args, opts = {}) {
+  return execFileP('git', args, { timeout: 60000, windowsHide: true, ...opts });
+}
+
+// Parse `git worktree list --porcelain` into structured entries. git lists the
+// primary tree first, so entry 0 is flagged as `main`.
+function parseWorktrees(stdout) {
+  const worktrees = [];
+  let cur = null;
+  for (const line of stdout.split(/\r?\n/)) {
+    if (line.startsWith('worktree ')) {
+      cur = { path: line.slice('worktree '.length), head: null, branch: null,
+              detached: false, bare: false, locked: false };
+      worktrees.push(cur);
+    } else if (!cur) {
+      continue;
+    } else if (line.startsWith('HEAD ')) {
+      cur.head = line.slice('HEAD '.length);
+    } else if (line.startsWith('branch ')) {
+      cur.branch = line.slice('branch '.length).replace(/^refs\/heads\//, '');
+    } else if (line === 'detached') {
+      cur.detached = true;
+    } else if (line === 'bare') {
+      cur.bare = true;
+    } else if (line === 'locked' || line.startsWith('locked ')) {
+      cur.locked = true;
+    }
+  }
+  if (worktrees[0]) worktrees[0].main = true;
+  return worktrees;
+}
+
+async function listWorktreesWin() {
+  const root = await mainRepoRoot();
+  const { stdout } = await gitWin(['-C', root, 'worktree', 'list', '--porcelain']);
+  return parseWorktrees(stdout);
+}
+
+// The main and test worktrees (and their branches) are off-limits to destructive
+// actions — see the FIXED RULE in CLAUDE.md. Guard on the main flag AND the branch
+// name AND the path's own basename, so no single mislabel can slip a protected tree
+// through.
+function isProtectedWorktree(wt) {
+  const base = String(wt.path || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop();
+  return !!wt.main || wt.branch === 'main' || wt.branch === 'test' || base === 'test';
+}
+function isProtectedBranch(branch) {
+  return branch === 'main' || branch === 'test';
+}
+
+// A worktree's path as git listed it, resolved to an absolute Windows path so it
+// can be handed back to `git -C`. Absolute C:/… paths pass through unchanged; the
+// rare relative form (a broken worktree) resolves against the repo root.
+function resolveWtPath(p, root) {
+  return path.isAbsolute(p) || /^[A-Za-z]:/.test(p) ? p : path.resolve(root, p);
+}
 
 app.get('/api/git/worktrees', async (_req, res) => {
   try {
-    const repoWsl = toWslPath(__dirname);
-    const { stdout } = await wsl(['git', '-C', repoWsl, 'worktree', 'list', '--porcelain']);
-    const worktrees = [];
-    let cur = null;
-    for (const line of stdout.split(/\r?\n/)) {
-      if (line.startsWith('worktree ')) {
-        cur = { path: line.slice('worktree '.length), head: null, branch: null,
-                detached: false, bare: false, locked: false };
-        worktrees.push(cur);
-      } else if (!cur) {
-        continue;
-      } else if (line.startsWith('HEAD ')) {
-        cur.head = line.slice('HEAD '.length);
-      } else if (line.startsWith('branch ')) {
-        cur.branch = line.slice('branch '.length).replace(/^refs\/heads\//, '');
-      } else if (line === 'detached') {
-        cur.detached = true;
-      } else if (line === 'bare') {
-        cur.bare = true;
-      } else if (line === 'locked' || line.startsWith('locked ')) {
-        cur.locked = true;
-      }
-    }
-    if (worktrees[0]) worktrees[0].main = true; // git lists the primary tree first
-    res.json({ worktrees });
+    res.json({ worktrees: await listWorktreesWin() });
   } catch (err) {
     res.status(500).json({ error: (err.stderr || err.message || String(err)).trim() });
   }
@@ -636,18 +676,18 @@ app.get('/api/git/worktrees', async (_req, res) => {
 
 app.get('/api/git/log', async (req, res) => {
   try {
-    const repoWsl = toWslPath(__dirname);
+    const root = await mainRepoRoot();
     const limit = clampInt(req.query.limit, 100, 1, 1000);
     // Optional ref (branch name or sha) to scope the log to one worktree's branch.
     // Constrain it to ref-safe characters so it can't smuggle extra git args.
     const ref = String(req.query.ref || '').trim();
-    if (ref && !/^[A-Za-z0-9._/-]+$/.test(ref)) {
+    if (ref && !REF_RE.test(ref)) {
       return res.status(400).json({ error: 'invalid ref' });
     }
-    const args = ['git', '-C', repoWsl, 'log', `--pretty=format:${GIT_LOG_FMT}`, '-n', String(limit)];
+    const args = ['-C', root, 'log', `--pretty=format:${GIT_LOG_FMT}`, '-n', String(limit)];
     if (ref) args.push(ref);
     args.push('--'); // terminate revisions: nothing after is treated as a pathspec
-    const { stdout } = await wsl(args);
+    const { stdout } = await gitWin(args);
     const commits = stdout.split(/\r?\n/).filter(Boolean).map((line) => {
       const [hash, short, author, email, at, refs, subject] = line.split('\x1f');
       return {
@@ -658,6 +698,110 @@ app.get('/api/git/log', async (req, res) => {
       };
     });
     res.json({ commits });
+  } catch (err) {
+    res.status(500).json({ error: (err.stderr || err.message || String(err)).trim() });
+  }
+});
+
+// ── Git: mutating actions (drop commit, remove worktree, merge branches) ───────
+// Each rewrites or removes real history, so they validate their inputs against
+// REF_RE/SHA_RE (no extra-argument injection), refuse to touch the protected
+// main/test worktrees, and roll back (rebase/merge --abort) on any failure so the
+// working tree is never left mid-operation.
+
+// Drop a single commit from a branch. The branch must be checked out in a worktree
+// (every feature branch here is): we rebase inside that worktree, replaying the
+// commits after <sha> onto <sha>'s parent, which removes exactly <sha>.
+app.post('/api/git/drop-commit', async (req, res) => {
+  try {
+    const branch = String(req.body?.branch || '').trim();
+    const sha = String(req.body?.sha || '').trim();
+    if (!REF_RE.test(branch)) return res.status(400).json({ error: 'invalid branch' });
+    if (!SHA_RE.test(sha)) return res.status(400).json({ error: 'invalid sha' });
+    if (isProtectedBranch(branch)) {
+      return res.status(403).json({ error: `refusing to rewrite history of the ${branch} branch` });
+    }
+    const root = await mainRepoRoot();
+    const wt = (await listWorktreesWin()).find(w => w.branch === branch);
+    if (!wt) return res.status(404).json({ error: `branch ${branch} is not checked out in any worktree` });
+    const wtPath = resolveWtPath(wt.path, root);
+
+    try {
+      // `rebase --onto <sha>^ <sha>` takes the range <sha>..HEAD and replays it onto
+      // <sha>'s parent, dropping <sha> itself. HEAD here is the worktree's branch.
+      await gitWin(['-C', wtPath, 'rebase', '--onto', `${sha}^`, sha]);
+    } catch (e) {
+      await gitWin(['-C', wtPath, 'rebase', '--abort']).catch(() => {});
+      const msg = (e.stderr || e.message || String(e)).trim();
+      return res.status(409).json({ error: `could not drop commit (rebase aborted): ${msg}` });
+    }
+    const { stdout } = await gitWin(['-C', wtPath, 'rev-parse', 'HEAD']);
+    res.json({ ok: true, branch, dropped: sha, head: stdout.trim() });
+  } catch (err) {
+    res.status(500).json({ error: (err.stderr || err.message || String(err)).trim() });
+  }
+});
+
+// Remove a worktree by its path (as listed by /api/git/worktrees). Never the main
+// or test worktree. Without force, git refuses when the tree has changes; the
+// client can re-request with force:true after confirming.
+app.post('/api/git/worktrees/remove', async (req, res) => {
+  try {
+    const target = String(req.body?.path || '').trim();
+    if (!target) return res.status(400).json({ error: 'path is required' });
+    const force = req.body?.force === true;
+    const root = await mainRepoRoot();
+    const wt = (await listWorktreesWin()).find(w => w.path === target);
+    if (!wt) return res.status(404).json({ error: 'no worktree at that path' });
+    if (isProtectedWorktree(wt)) {
+      return res.status(403).json({ error: 'refusing to remove the main or test worktree' });
+    }
+    const args = ['-C', root, 'worktree', 'remove'];
+    if (force) args.push('--force');
+    args.push(resolveWtPath(wt.path, root));
+    try {
+      await gitWin(args);
+    } catch (e) {
+      const msg = (e.stderr || e.message || String(e)).trim();
+      // Signal "needs force" distinctly so the client can offer a force retry.
+      const needsForce = /use\s+--force|contains modified|untracked|not empty|locked working tree/i.test(msg);
+      return res.status(needsForce ? 409 : 500).json({ error: msg, needsForce });
+    }
+    res.json({ ok: true, removed: wt.path, branch: wt.branch });
+  } catch (err) {
+    res.status(500).json({ error: (err.stderr || err.message || String(err)).trim() });
+  }
+});
+
+// Merge one branch into another. The target branch must be checked out in a
+// worktree; we merge inside it (--no-edit for a non-interactive commit message).
+// On conflict or any failure the merge is aborted, leaving the target untouched.
+app.post('/api/git/merge', async (req, res) => {
+  try {
+    const from = String(req.body?.from || '').trim();
+    const into = String(req.body?.into || '').trim();
+    if (!REF_RE.test(from)) return res.status(400).json({ error: 'invalid source branch' });
+    if (!REF_RE.test(into)) return res.status(400).json({ error: 'invalid target branch' });
+    if (from === into) return res.status(400).json({ error: 'source and target are the same branch' });
+    const root = await mainRepoRoot();
+    const worktrees = await listWorktreesWin();
+    const target = worktrees.find(w => w.branch === into);
+    if (!target) return res.status(404).json({ error: `target branch ${into} is not checked out in any worktree` });
+    if (!worktrees.some(w => w.branch === from)) {
+      // Not fatal if the branch exists but isn't checked out; verify it resolves.
+      try { await gitWin(['-C', root, 'rev-parse', '--verify', `refs/heads/${from}`]); }
+      catch { return res.status(404).json({ error: `source branch ${from} not found` }); }
+    }
+    const wtPath = resolveWtPath(target.path, root);
+    try {
+      const { stdout } = await gitWin(['-C', wtPath, 'merge', '--no-edit', from]);
+      const head = (await gitWin(['-C', wtPath, 'rev-parse', 'HEAD'])).stdout.trim();
+      res.json({ ok: true, from, into, head, output: stdout.trim() });
+    } catch (e) {
+      await gitWin(['-C', wtPath, 'merge', '--abort']).catch(() => {});
+      const msg = (e.stderr || e.stdout || e.message || String(e)).trim();
+      return res.status(409).json({ error: `merge aborted: ${msg}` });
+    }
   } catch (err) {
     res.status(500).json({ error: (err.stderr || err.message || String(err)).trim() });
   }

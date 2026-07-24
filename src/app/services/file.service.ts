@@ -110,6 +110,28 @@ export class FileService {
       .pipe(map(r => r.commits));
   }
 
+  // ── Git mutating actions (drop commit / remove worktree / merge branches) ──
+  // Drop a single commit from a branch (rewrites that branch's history).
+  dropGitCommit(branch: string, sha: string):
+    Observable<{ ok: boolean; branch: string; dropped: string; head: string }> {
+    return this.http.post<{ ok: boolean; branch: string; dropped: string; head: string }>(
+      `${API_BASE}/api/git/drop-commit`, { branch, sha });
+  }
+
+  // Remove a worktree by its path. force retries past uncommitted/untracked changes.
+  removeGitWorktree(path: string, force = false):
+    Observable<{ ok: boolean; removed: string; branch: string | null }> {
+    return this.http.post<{ ok: boolean; removed: string; branch: string | null }>(
+      `${API_BASE}/api/git/worktrees/remove`, { path, force });
+  }
+
+  // Merge one branch into another (the target must be checked out in a worktree).
+  mergeGitBranch(from: string, into: string):
+    Observable<{ ok: boolean; from: string; into: string; head: string; output: string }> {
+    return this.http.post<{ ok: boolean; from: string; into: string; head: string; output: string }>(
+      `${API_BASE}/api/git/merge`, { from, into });
+  }
+
   // ── Saved panel layouts ──
   listLayouts(): Observable<string[]> {
     return this.http.get<{ names: string[] }>(`${API_BASE}/api/layouts`).pipe(
