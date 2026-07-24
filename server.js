@@ -611,7 +611,7 @@ const REPO_ID_RE = /^[A-Za-z0-9._-]+$/;
 // Single pass over a transcript → the metadata the list/tab needs. Parsing 40+ files
 // on every poll is wasteful, so callers cache this by (file, mtime).
 function repoSessionMeta(raw) {
-  let title = null, summary = null, turns = 0, startedAt = null, lastAt = null, cwd = null, gitBranch = null;
+  let title = null, summary = null, aiTitle = null, turns = 0, startedAt = null, lastAt = null, cwd = null, gitBranch = null;
   for (const line of raw.split(/\r?\n/)) {
     const s = line.trim();
     if (!s) continue;
@@ -620,6 +620,11 @@ function repoSessionMeta(raw) {
     if (!cwd && obj.cwd) cwd = obj.cwd;
     if (!gitBranch && obj.gitBranch) gitBranch = obj.gitBranch;
     if (obj.type === 'summary' && typeof obj.summary === 'string') summary = obj.summary;
+    // Claude writes an `ai-title` entry: a short generated NAME for the session
+    // (e.g. "Add session persistence…"). Prefer it as the row's label — it reads far
+    // better than the first prompt's words. It carries no `message`, so capture it
+    // before the message-only guard below.
+    if (obj.type === 'ai-title' && typeof obj.aiTitle === 'string') aiTitle = obj.aiTitle;
     if (obj.isMeta || !obj.message) continue;
     if (obj.type === 'user') {
       if (Array.isArray(obj.message.content) && obj.message.content.every(b => b && b.type === 'tool_result')) continue;
@@ -629,7 +634,8 @@ function repoSessionMeta(raw) {
       if (textFromContent(obj.message.content)) turns++;
     }
   }
-  return { title: summary || title, turns, startedAt, lastAt, cwd, gitBranch };
+  // Label preference: the generated session name → transcript summary → first prompt.
+  return { title: aiTitle || summary || title, turns, startedAt, lastAt, cwd, gitBranch };
 }
 
 const repoMetaCache = new Map(); // file → { mtimeMs, meta }

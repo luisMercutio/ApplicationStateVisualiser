@@ -53,6 +53,9 @@ interface Row {
         <button mat-icon-button class="sm" matTooltip="Refresh" (click)="refresh()"><mat-icon>refresh</mat-icon></button>
       </div>
 
+      <!-- Top pane: per-BR "Submit with Claude" sessions. Its height is user-draggable
+           via the divider below; the bottom pane (Repository sessions) takes the rest. -->
+      <div class="cs-pane" [style.height.px]="topHeight()">
       @if (error(); as e) { <div class="msg err">{{ e }}</div> }
 
       @if (!rows().length) {
@@ -103,10 +106,14 @@ interface Row {
           }
         </div>
       }
+      </div>
 
-      <!-- Every Claude session that ran in this repo (mirrored to .claude/conversations/
-           by the Stop/SessionEnd hook). These survive closing the tmux window: view the
-           saved conversation, or resume it (claude --resume) in a fresh terminal. -->
+      <div class="cs-divider" (mousedown)="startDrag($event)" matTooltip="Drag to resize the two lists"><span class="grip"></span></div>
+
+      <!-- Bottom pane: every Claude session that ran in this repo (mirrored to
+           .claude/conversations/ by the Stop/SessionEnd hook). These survive closing the
+           tmux window: view the saved conversation, or resume it (claude --resume). -->
+      <div class="cs-pane grow">
       <div class="cs-subhead">
         <span class="title">Repository sessions</span>
         <span class="count">{{ repoSessions().length }}</span>
@@ -137,6 +144,7 @@ interface Row {
           }
         </div>
       }
+      </div>
     </div>
   `,
   styles: [`
@@ -149,7 +157,17 @@ interface Row {
     .cs-subhead .title { font-weight: 600; color: #333; } .cs-subhead .count { color: #999; font-size: 12px; }
     .spacer { flex: 1; } .sm { width: 30px; height: 30px; line-height: 30px; } .sm mat-icon { font-size: 18px; width: 18px; height: 18px; }
     .msg { padding: 20px; color: #999; text-align: center; } .msg.err { color: #c62828; }
-    .cs-list { padding: 8px; overflow-y: auto; }
+    /* Two stacked panes with a draggable divider. The top pane's height is set inline
+       (topHeight); the bottom pane grows to fill the rest. Each pane clips, and its
+       .cs-list scrolls inside it. */
+    .cs-pane { display: flex; flex-direction: column; flex: 0 0 auto; min-height: 0; overflow: hidden; }
+    .cs-pane.grow { flex: 1 1 auto; }
+    .cs-divider { flex: 0 0 9px; height: 9px; cursor: row-resize; display: flex; align-items: center;
+                  justify-content: center; background: #f0f0f2; border-top: 1px solid #e2e2e6;
+                  border-bottom: 1px solid #e2e2e6; }
+    .cs-divider:hover { background: #e4e4ea; }
+    .cs-divider .grip { width: 44px; height: 3px; border-radius: 2px; background: #bcbcc4; }
+    .cs-list { padding: 8px; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
     .cs-row { display: flex; align-items: center; gap: 10px; background: white; border: 1px solid #dcdfe4;
               border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
     .dot { font-size: 12px; width: 12px; height: 12px; flex-shrink: 0; }
@@ -182,6 +200,12 @@ export class ClaudeSessionsComponent implements OnInit, OnDestroy {
   // Every saved session for this repo (independent of BRs / live tmux).
   repoSessions = signal<RepoSession[]>([]);
   repoError = signal<string | null>(null);
+
+  // Height (px) of the top pane; the divider drags it, the bottom pane fills the rest.
+  topHeight = signal<number>(260);
+  private dragStartY = 0;
+  private dragStartH = 0;
+  private dragMax = Number.MAX_SAFE_INTEGER;
 
   rows = computed<Row[]>(() => {
     const rules = this.rules();
@@ -228,7 +252,34 @@ export class ClaudeSessionsComponent implements OnInit, OnDestroy {
     this.refreshRepo();   // load saved repo sessions once (refreshable via the button)
   }
 
-  ngOnDestroy(): void { this.subs.forEach(s => s.unsubscribe()); }
+  ngOnDestroy(): void { this.subs.forEach(s => s.unsubscribe()); this.endDrag(); }
+
+  // Resize the two panes by dragging the divider. Listeners live on document during the
+  // drag so it keeps tracking even if the pointer leaves the thin divider.
+  startDrag(e: MouseEvent): void {
+    e.preventDefault();
+    const root = (e.currentTarget as HTMLElement).parentElement;
+    // Leave headroom for the toolbar + a usable bottom pane so neither can collapse away.
+    this.dragMax = root ? Math.max(80, root.clientHeight - 140) : Number.MAX_SAFE_INTEGER;
+    this.dragStartY = e.clientY;
+    this.dragStartH = this.topHeight();
+    document.addEventListener('mousemove', this.onDragMove);
+    document.addEventListener('mouseup', this.endDrag);
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'row-resize';
+  }
+
+  private onDragMove = (e: MouseEvent): void => {
+    const next = this.dragStartH + (e.clientY - this.dragStartY);
+    this.topHeight.set(Math.max(80, Math.min(this.dragMax, next)));
+  };
+
+  private endDrag = (): void => {
+    document.removeEventListener('mousemove', this.onDragMove);
+    document.removeEventListener('mouseup', this.endDrag);
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+  };
 
   refresh(): void {
     this.file.getClaudeSessions().subscribe({
