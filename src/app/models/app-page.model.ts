@@ -1,7 +1,7 @@
 // The top-level pages the header navigates between. The active database
 // connection (the "project") is chosen separately in the toolbar and is
 // orthogonal to which page is showing.
-export type AppPage = 'br-list' | 'notes' | 'activity' | 'features' | 'terminal' | 'claude-sessions' | 'git' | 'settings';
+export type AppPage = 'br-list' | 'notes' | 'activity' | 'features' | 'terminal' | 'git' | 'settings';
 
 // Pages reachable from the main nav buttons (Settings is a separate gear icon).
 export const NAV_PAGES: { page: AppPage; label: string; icon: string }[] = [
@@ -10,6 +10,5 @@ export const NAV_PAGES: { page: AppPage; label: string; icon: string }[] = [
   { page: 'activity', label: 'Activity', icon: 'notifications' },
   { page: 'features', label: 'Features', icon: 'dashboard' },
   { page: 'terminal', label: 'Terminal', icon: 'terminal' },
-  { page: 'claude-sessions', label: 'Claude Sessions', icon: 'smart_toy' },
   { page: 'git', label: 'Git', icon: 'history' },
 ];
