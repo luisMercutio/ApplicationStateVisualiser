@@ -1,5 +1,5 @@
 import {
-  Component, ElementRef, OnDestroy, AfterViewInit, inject, input, signal, viewChild,
+  Component, ElementRef, OnDestroy, AfterViewInit, effect, inject, input, signal, viewChild,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { MatIconModule } from '@angular/material/icon';
@@ -12,6 +12,10 @@ import { WorkspaceService } from '../../../services/workspace.service';
 
 type Status = 'connecting' | 'connected' | 'disconnected' | 'error';
 
+// Mirror the server's SESSION_RE (server.js): tmux session names the PTY bridge
+// will accept. Validate here so a bad name is rejected before we open a socket.
+const SESSION_NAME_RE = /^[A-Za-z0-9_.-]+$/;
+
 // A live terminal panel that attaches to a tmux session inside WSL via the
 // server's /api/terminal WebSocket ⇄ PTY bridge. Keystrokes stream to the PTY;
 // terminal output streams back and is rendered by xterm.js.
@@ -23,16 +27,36 @@ type Status = 'connecting' | 'connected' | 'disconnected' | 'error';
     <div class="term-wrapper">
       <div class="term-bar">
         <mat-icon class="dot" [class]="status()">fiber_manual_record</mat-icon>
-        <select class="session-select" [value]="session()"
-                (change)="onSessionChange($event)"
-                [disabled]="sessions().length === 0">
-          @for (s of sessions(); track s) {
-            <option [value]="s">{{ s }}</option>
-          }
-          @if (sessions().length === 0) {
-            <option value="">no tmux sessions</option>
-          }
-        </select>
+        @if (adding()) {
+          <input #nameInput class="session-input" type="text" placeholder="new session name"
+                 [value]="newName()" [class.invalid]="!!addError()"
+                 (input)="onNameInput(nameInput.value)"
+                 (keydown.enter)="confirmAdd()"
+                 (keydown.escape)="cancelAdd()" />
+          <button mat-icon-button class="bar-btn" matTooltip="Create & attach"
+                  (click)="confirmAdd()" [disabled]="!newName().trim()">
+            <mat-icon>check</mat-icon>
+          </button>
+          <button mat-icon-button class="bar-btn" matTooltip="Cancel" (click)="cancelAdd()">
+            <mat-icon>close</mat-icon>
+          </button>
+          @if (addError()) { <span class="add-error">{{ addError() }}</span> }
+        } @else {
+          <select class="session-select" [value]="session()"
+                  (change)="onSessionChange($event)"
+                  [disabled]="sessions().length === 0">
+            @for (s of sessions(); track s) {
+              <option [value]="s">{{ s }}</option>
+            }
+            @if (sessions().length === 0) {
+              <option value="">no tmux sessions</option>
+            }
+          </select>
+          <button mat-icon-button class="bar-btn" matTooltip="New session by name"
+                  (click)="startAdd()">
+            <mat-icon>add</mat-icon>
+          </button>
+        }
         <span class="status-text">{{ statusText() }}</span>
         <span class="spacer"></span>
         <button mat-icon-button class="bar-btn" matTooltip="Refresh session list"
@@ -56,6 +80,10 @@ type Status = 'connecting' | 'connected' | 'disconnected' | 'error';
     .dot.disconnected { color: #9e9e9e; }
     .dot.error { color: #ff5252; }
     .session-select { background: #1e1e1e; color: #ddd; border: 1px solid #444; border-radius: 4px; padding: 2px 6px; font-size: 12px; max-width: 220px; }
+    .session-input { background: #1e1e1e; color: #ddd; border: 1px solid #444; border-radius: 4px; padding: 2px 6px; font-size: 12px; width: 180px; outline: none; }
+    .session-input:focus { border-color: #4caf50; }
+    .session-input.invalid { border-color: #ff5252; }
+    .add-error { color: #ff8a80; font-size: 11px; white-space: nowrap; }
     .status-text { color: #9e9e9e; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .spacer { flex: 1; }
     .bar-btn { width: 28px; height: 28px; line-height: 28px; color: #bbb; }
@@ -68,6 +96,7 @@ export class TerminalComponent implements AfterViewInit, OnDestroy {
   private fileService = inject(FileService);
   private workspace = inject(WorkspaceService);
   private host = viewChild.required<ElementRef<HTMLDivElement>>('host');
+  private nameInput = viewChild<ElementRef<HTMLInputElement>>('nameInput');
 
   // When set (e.g. by embedding the component with a binding), attach to this
   // session on init instead of auto-selecting the default tmux session. When hosted
@@ -79,11 +108,21 @@ export class TerminalComponent implements AfterViewInit, OnDestroy {
   status = signal<Status>('connecting');
   statusText = signal<string>('Loading sessions…');
 
+  // "New session by name" flow: swaps the picker for an inline name input.
+  adding = signal<boolean>(false);
+  newName = signal<string>('');
+  addError = signal<string>('');
+
   private term?: XTerm;
   private fit?: XFitAddon;
   private ws?: WebSocket;
   private resizeObserver?: ResizeObserver;
   private disposed = false;
+
+  constructor() {
+    // Focus the name field as soon as the add-input is rendered.
+    effect(() => { if (this.adding()) this.nameInput()?.nativeElement.focus(); });
+  }
 
   // xterm is ~250 kB and CommonJS; load it lazily so it stays out of the initial
   // bundle and only downloads when a terminal panel is actually opened.
@@ -161,6 +200,42 @@ export class TerminalComponent implements AfterViewInit, OnDestroy {
   onSessionChange(event: Event): void {
     const value = (event.target as HTMLSelectElement).value;
     if (value && value !== this.session()) this.connect(value);
+  }
+
+  startAdd(): void {
+    this.newName.set('');
+    this.addError.set('');
+    this.adding.set(true);
+  }
+
+  cancelAdd(): void {
+    this.adding.set(false);
+    this.newName.set('');
+    this.addError.set('');
+  }
+
+  onNameInput(value: string): void {
+    this.newName.set(value);
+    if (this.addError()) this.addError.set('');
+  }
+
+  // Create (or attach to) a tmux session by name. The PTY bridge runs
+  // `tmux new-session -A`, so an unknown name is created on attach; a name that
+  // already exists just attaches. Validate against the server's SESSION_RE first.
+  confirmAdd(): void {
+    const name = this.newName().trim();
+    if (!name) return;
+    if (!SESSION_NAME_RE.test(name)) {
+      this.addError.set('Only letters, numbers, and _ . -');
+      return;
+    }
+    if (!this.sessions().includes(name)) {
+      this.sessions.update(list => [...list, name]);
+    }
+    this.adding.set(false);
+    this.newName.set('');
+    this.addError.set('');
+    this.connect(name);
   }
 
   reconnect(): void {
