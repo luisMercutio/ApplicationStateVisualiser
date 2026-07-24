@@ -1,5 +1,6 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { DbService } from './db.service';
+import { FileService } from './file.service';
 import { ActivityMessage } from '../models/activity.model';
 
 // Persisted so a page refresh keeps the badges (unread finishes) and so the
@@ -8,15 +9,33 @@ const LS_UNREAD = 'asv.sessionActivity.unread';
 const LS_PROCESSED = 'asv.sessionActivity.processed';
 const PROCESSED_CAP = 400;   // keep the processed-id set bounded
 const RECONNECT_MS = 5000;
+const KNOWN_REFRESH_MS = 15000;
 
-// A "Claude done" notification carries the finishing tmux session name on its own
-// body line, e.g. `tmux: claude-br-042`. That's the join key back to a terminal
-// session. The done event is also tagged white_check_mark by the notifier.
+// A "Claude done" notification identifies the run that finished by directory —
+// the notifier puts the worktree/cwd basename in the title ("Claude done (…): NAME")
+// and the full path on a `dir:` body line. When Claude runs inside WSL tmux it also
+// adds a `tmux: <session>` line. Any of these can name a terminal session; we match
+// the candidates against the live tmux session list (case-insensitive) so only a
+// finish that maps to a real session in the picker lights up a badge.
 const TMUX_LINE = /^\s*tmux:\s*(\S+)\s*$/m;
+const DIR_LINE = /^\s*dir:\s*(.+?)\s*$/m;
+const TITLE_TAIL = /:\s*([^:]+?)\s*$/;   // trailing "…: NAME"
 
-function sessionOf(ev: ActivityMessage): string {
-  const m = TMUX_LINE.exec(ev.message || '');
-  return m ? m[1] : '';
+function basename(p: string): string {
+  const parts = String(p).split(/[\\/]+/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : '';
+}
+
+// Names in the message that could correspond to a terminal session.
+function candidatesOf(ev: ActivityMessage): string[] {
+  const out: string[] = [];
+  const tmux = TMUX_LINE.exec(ev.message || '');
+  if (tmux) out.push(tmux[1]);
+  const dir = DIR_LINE.exec(ev.message || '');
+  if (dir) { const b = basename(dir[1]); if (b) out.push(b); }
+  const title = TITLE_TAIL.exec(ev.title || '');
+  if (title) out.push(title[1].trim());
+  return out;
 }
 
 function isDone(ev: ActivityMessage): boolean {
@@ -45,36 +64,44 @@ function capSet(set: Set<string>, cap: number): void {
 }
 
 /**
- * Tracks which Claude terminal sessions have finished a turn since you last
+ * Tracks which terminal (tmux) sessions have finished a Claude turn since you last
  * opened them, so the UI can show a "notification" badge until you look.
  *
  * A single app-wide WebSocket to /api/activity (the same ntfy mirror the Activity
  * page reads) stays connected for the life of the app — independent of which page
  * is showing — so finishes accumulate in the background. Each "Claude done" event
- * names the finishing tmux session on a `tmux:` body line; we flag that session as
- * unread and clear it when the user selects/opens it.
+ * names the finished run by directory (its worktree/cwd basename) and, when run in
+ * WSL tmux, by tmux session; we match those against the live tmux session list and
+ * flag the matching session as unread, cleared when the user selects/opens it.
+ *
+ * Only finishes observed live (after the app is open) flag a badge — the historical
+ * backlog present at startup is baselined so a fresh load doesn't light everything up.
  */
 @Injectable({ providedIn: 'root' })
 export class SessionActivityService {
   private db = inject(DbService);
+  private file = inject(FileService);
 
-  // tmux session names (e.g. claude-br-042) with an unseen finish.
+  // tmux session names (as the picker lists them) with an unseen finish.
   private unreadSet = signal<Set<string>>(loadSet(LS_UNREAD));
   // ntfy message ids already accounted for — stops the reconnect/refresh backlog
   // from re-flagging a finish we've already surfaced (or baselined at startup).
   private processed = loadSet(LS_PROCESSED);
+  // Live tmux session names, refreshed periodically, used to correlate a finish
+  // (by directory/tmux name) to a real session in the picker.
+  private knownSessions: string[] = [];
 
   /** Number of sessions with an unseen finish (for an aggregate badge). */
   readonly count = computed(() => this.unreadSet().size);
 
   private ws?: WebSocket;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
-  // The very first backlog after startup is a baseline: historical finishes are
-  // recorded as processed but NOT flagged, so opening the app doesn't light up
-  // every session that ever finished. Live messages after that do flag.
-  private baselined = false;
 
-  constructor() { this.connect(); }
+  constructor() {
+    this.refreshKnown();
+    setInterval(() => this.refreshKnown(), KNOWN_REFRESH_MS);
+    this.connect();
+  }
 
   /** True when this session finished a turn we haven't opened since. */
   isUnread(session: string): boolean {
@@ -100,6 +127,21 @@ export class SessionActivityService {
     persistSet(LS_UNREAD, next);
   }
 
+  // Resolve any of the message's candidate names to a live session (case-insensitive).
+  private matchKnown(candidates: string[]): string | null {
+    const lc = candidates.map(c => c.toLowerCase());
+    return this.knownSessions.find(s => lc.includes(s.toLowerCase())) ?? null;
+  }
+
+  private refreshKnown(): Promise<void> {
+    return new Promise(resolve => {
+      this.file.getTmuxSessions().subscribe({
+        next: ({ sessions }) => { this.knownSessions = sessions ?? []; resolve(); },
+        error: () => resolve(),
+      });
+    });
+  }
+
   private connect(): void {
     let ws: WebSocket;
     try { ws = new WebSocket(this.db.activityWsUrl()); }
@@ -120,22 +162,27 @@ export class SessionActivityService {
     let msg: { type?: string; events?: ActivityMessage[]; event?: ActivityMessage };
     try { msg = JSON.parse(ev.data); } catch { return; }
     if (msg.type === 'backlog' && Array.isArray(msg.events)) {
-      const baseline = !this.baselined;
-      for (const e of msg.events) this.consume(e, baseline);
-      this.baselined = true;
+      // Baseline the backlog: mark every historical finish processed without flagging.
+      for (const e of msg.events) { if (e?.id) this.processed.add(e.id); }
+      capSet(this.processed, PROCESSED_CAP);
       persistSet(LS_PROCESSED, this.processed);
     } else if (msg.type === 'message' && msg.event) {
-      this.consume(msg.event, false);
-      persistSet(LS_PROCESSED, this.processed);
+      void this.consumeLive(msg.event);
     }
   }
 
-  private consume(ev: ActivityMessage, baselineOnly: boolean): void {
+  private async consumeLive(ev: ActivityMessage): Promise<void> {
     if (!ev?.id || this.processed.has(ev.id)) return;
     this.processed.add(ev.id);
     capSet(this.processed, PROCESSED_CAP);
-    if (baselineOnly || !isDone(ev)) return;
-    const session = sessionOf(ev);
-    if (session) this.flag(session);
+    persistSet(LS_PROCESSED, this.processed);
+    if (!isDone(ev)) return;
+    const candidates = candidatesOf(ev);
+    if (!candidates.length) return;
+    // Match against the live session list; if nothing matches, the session may have
+    // just been created — refresh once and retry before giving up.
+    let match = this.matchKnown(candidates);
+    if (!match) { await this.refreshKnown(); match = this.matchKnown(candidates); }
+    if (match) this.flag(match);
   }
 }
