@@ -3,7 +3,7 @@ import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
 import { Panel } from '../models/panel.model';
-import { ClaudeSession, ConversationMessage } from '../models/app-data.model';
+import { ClaudeSession, ConversationMessage, RepoSession } from '../models/app-data.model';
 import { GitCommit, GitWorktree } from '../models/git.model';
 
 // Derive the API host from the page's own host so the app works both on
@@ -92,6 +92,29 @@ export class FileService {
     return this.http.get<{ session: string; sessionId: string; messages: ConversationMessage[] }>(
       `${API_BASE}/api/claude/sessions/${encodeURIComponent(session)}/conversation`,
       { headers: { 'Cache-Control': 'no-cache' } });
+  }
+
+  // ── Repository sessions (every Claude session mirrored for this repo) ──
+  // One row per saved transcript UUID, independent of any BR or live tmux session.
+  getRepoSessions(): Observable<RepoSession[]> {
+    return this.http.get<{ sessions: RepoSession[] }>(
+      `${API_BASE}/api/claude/repo-sessions`, { headers: { 'Cache-Control': 'no-cache' } })
+      .pipe(map(r => r.sessions));
+  }
+
+  // The saved conversation for a repo session (prompt/answer turns only), by UUID.
+  getRepoSessionConversation(id: string):
+    Observable<{ id: string; file: string; messages: ConversationMessage[] }> {
+    return this.http.get<{ id: string; file: string; messages: ConversationMessage[] }>(
+      `${API_BASE}/api/claude/repo-sessions/${encodeURIComponent(id)}/conversation`,
+      { headers: { 'Cache-Control': 'no-cache' } });
+  }
+
+  // Resume a saved repo session (claude --resume <uuid>) in a fresh tmux window; the
+  // response's session name can be attached on the Terminal page.
+  resumeRepoSession(id: string): Observable<{ session: string; mode: string }> {
+    return this.http.post<{ session: string; mode: string }>(
+      `${API_BASE}/api/claude/repo-sessions/${encodeURIComponent(id)}/resume`, {});
   }
 
   // ── Git history + worktrees (read-only views over the repo's own git) ──

@@ -33,7 +33,9 @@ import { GitCommit, GitWorktree } from '../../../models/git.model';
       } @else {
         <div class="wt-grid">
           @for (wt of worktrees(); track wt.path) {
-            <button class="wt-card" [class.selected]="selectedRef() === refFor(wt)" (click)="selectWorktree(wt)">
+            @let state = stateOf(wt);
+            <button class="wt-card" [attr.data-state]="state"
+                    [class.selected]="selectedRef() === refFor(wt)" (click)="selectWorktree(wt)">
               <div class="wt-top">
                 <mat-icon class="wt-icon">{{ wt.main ? 'home' : (wt.detached ? 'link_off' : 'account_tree') }}</mat-icon>
                 <span class="wt-branch">{{ wt.branch ?? (wt.detached ? 'detached HEAD' : '—') }}</span>
@@ -42,6 +44,9 @@ import { GitCommit, GitWorktree } from '../../../models/git.model';
                 @if (wt.main) { <span class="badge main">main tree</span> }
                 @if (wt.detached) { <span class="badge det">detached</span> }
                 @if (wt.locked) { <span class="badge lock">locked</span> }
+                @if (state === 'merged-main') { <span class="badge m-main">merged → main</span> }
+                @if (state === 'merged-test') { <span class="badge m-test">merged → test</span> }
+                @if (state === 'stale') { <span class="badge stale" [matTooltip]="staleTip(wt)">stale</span> }
               </div>
               <div class="wt-sha mono">{{ (wt.head ?? '').slice(0, 10) || '—' }}</div>
               <div class="wt-path mono" [matTooltip]="wt.path">{{ shortPath(wt.path) }}</div>
@@ -124,6 +129,18 @@ import { GitCommit, GitWorktree } from '../../../models/git.model';
     .badge.main { background: #e8f5e9; color: #2e7d32; }
     .badge.det { background: #fff3e0; color: #ef6c00; }
     .badge.lock { background: #eceff1; color: #607d8b; }
+    .badge.m-main { background: #ffebee; color: #c62828; }
+    .badge.m-test { background: #fff8e1; color: #f9a825; }
+    .badge.stale { background: #f3e5f5; color: #8e24aa; }
+
+    /* Lifecycle colour coding: merged→main (red), merged→test (yellow), stale (violet).
+       A left accent bar + faint tint keeps the card readable while signalling state. */
+    .wt-card[data-state="merged-main"] { border-left: 4px solid #e53935; background: #fdf4f4; }
+    .wt-card[data-state="merged-main"]:hover { border-color: #ef9a9a; }
+    .wt-card[data-state="merged-test"] { border-left: 4px solid #f9a825; background: #fffdf3; }
+    .wt-card[data-state="merged-test"]:hover { border-color: #ffe082; }
+    .wt-card[data-state="stale"] { border-left: 4px solid #8e24aa; background: #faf4fc; }
+    .wt-card[data-state="stale"]:hover { border-color: #ce93d8; }
     .wt-sha { font-size: 11px; color: #78909c; }
     .wt-path { font-size: 11px; color: #b0bec5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -179,6 +196,22 @@ export class GitHistoryComponent implements OnInit {
       next: commits => { this.commits.set(commits); this.error.set(null); this.loading.set(false); },
       error: err => { this.error.set(errMsg(err)); this.loading.set(false); },
     });
+  }
+
+  // A worktree is "stale" once its HEAD hasn't moved for over a week.
+  private static readonly STALE_MS = 7 * 24 * 60 * 60 * 1000;
+
+  // Lifecycle state driving the card colour. Merged states outrank staleness (a
+  // merged tree is the more actionable signal), and main beats test.
+  stateOf(wt: GitWorktree): 'merged-main' | 'merged-test' | 'stale' | '' {
+    if (wt.mergedToMain) return 'merged-main';
+    if (wt.mergedToTest) return 'merged-test';
+    if (wt.lastCommitMs != null && Date.now() - wt.lastCommitMs > GitHistoryComponent.STALE_MS) return 'stale';
+    return '';
+  }
+
+  staleTip(wt: GitWorktree): string {
+    return wt.lastCommitMs != null ? `Last commit ${relativeTime(wt.lastCommitMs)}` : 'No recent activity';
   }
 
   // The ref to log for a worktree: its branch, or its detached HEAD sha.

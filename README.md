@@ -24,6 +24,24 @@ Open **http://localhost:4201**, then in the folder picker enter the path to a pr
 - `node server.js` — the API only
 - `npm run build` — production build into `dist/`
 
+### Run over a Tailscale connection
+
+To reach the app from another device on your [Tailscale](https://tailscale.com) tailnet (e.g. a phone or a second machine):
+
+```bash
+npm run dev:remote  # same API on :3001, but ng serve binds 0.0.0.0 and allows *.ts.net hosts
+```
+
+This differs from `npm run dev` in two ways: the Angular dev server listens on `0.0.0.0` (all interfaces, not just localhost) and whitelists `.ts.net` hosts so Tailscale's MagicDNS names are accepted.
+
+Then, from the remote device (with Tailscale up on both ends), open:
+
+```
+http://<this-machine's-tailscale-name-or-IP>:4201
+```
+
+No extra config is needed for the API: the client derives the API base (`:3001`) and the terminal/activity WebSocket hosts from the browser's own hostname, so the same origin that loads the app reaches its backend — over localhost or over Tailscale alike.
+
 ---
 
 ## How it works

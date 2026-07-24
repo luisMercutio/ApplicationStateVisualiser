@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs').promises;
 const path = require('path');
+const os = require('os');
 const http = require('http');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
@@ -343,7 +344,9 @@ function liveClaudeSessions() {
       { timeout: 5000, windowsHide: true }, (err, stdout) => {
         const names = err ? [] : (stdout || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean)
           .map(l => l.split(':')[0].trim()).filter(Boolean);
-        resolve(names.filter(n => n.startsWith('claude-')));
+        // `claude-resume-*` are transient resumes of a saved repo session (see the
+        // repo-sessions routes) — they belong to that list, not the per-BR one.
+        resolve(names.filter(n => n.startsWith('claude-') && !n.startsWith('claude-resume-')));
       });
   });
 }
@@ -595,12 +598,168 @@ app.post('/api/claude/sessions/:session/archive', (req, res) => archiveOrDeleteS
 // Delete a dead session entirely: git worktree(s)+branch(es) AND the conversation.
 app.delete('/api/claude/sessions/:session', (req, res) => archiveOrDeleteSession(req, res, true));
 
+// ── Repository sessions (every Claude session for this repo) ────────────────────
+// The routes above are keyed on a Business Rule (claude-<brSlug>): they only surface
+// sessions that "Submit with Claude" spawned. But EVERY session run in this repo —
+// including ad-hoc ones started by hand in tmux — is mirrored into .claude/conversations/
+// by the Stop/SessionEnd hook (sync-transcript.sh) as <prefix>__<uuid>.jsonl. These
+// routes list those transcripts one-per-session (keyed by the session UUID), so a
+// session survives closing its tmux window: its saved conversation stays viewable and
+// can be resumed (claude --resume <uuid>). No BR, worktree or live tmux required.
+const REPO_ID_RE = /^[A-Za-z0-9._-]+$/;
+
+// Single pass over a transcript → the metadata the list/tab needs. Parsing 40+ files
+// on every poll is wasteful, so callers cache this by (file, mtime).
+function repoSessionMeta(raw) {
+  let title = null, summary = null, turns = 0, startedAt = null, lastAt = null, cwd = null, gitBranch = null;
+  for (const line of raw.split(/\r?\n/)) {
+    const s = line.trim();
+    if (!s) continue;
+    let obj; try { obj = JSON.parse(s); } catch { continue; }
+    if (obj.timestamp) { if (!startedAt) startedAt = obj.timestamp; lastAt = obj.timestamp; }
+    if (!cwd && obj.cwd) cwd = obj.cwd;
+    if (!gitBranch && obj.gitBranch) gitBranch = obj.gitBranch;
+    if (obj.type === 'summary' && typeof obj.summary === 'string') summary = obj.summary;
+    if (obj.isMeta || !obj.message) continue;
+    if (obj.type === 'user') {
+      if (Array.isArray(obj.message.content) && obj.message.content.every(b => b && b.type === 'tool_result')) continue;
+      const text = textFromContent(obj.message.content);
+      if (text) { turns++; if (!title) title = text.replace(/\s+/g, ' ').slice(0, 140); }
+    } else if (obj.type === 'assistant') {
+      if (textFromContent(obj.message.content)) turns++;
+    }
+  }
+  return { title: summary || title, turns, startedAt, lastAt, cwd, gitBranch };
+}
+
+const repoMetaCache = new Map(); // file → { mtimeMs, meta }
+
+// Every mirrored session for this repo: one row per transcript UUID, newest first.
+async function listRepoSessions() {
+  const dir = await conversationsDir();
+  let files;
+  try { files = await fs.readdir(dir); } catch { return []; }
+  const out = [];
+  for (const f of files) {
+    if (!f.endsWith('.jsonl')) continue;
+    const sep = f.indexOf('__');
+    if (sep <= 0) continue;
+    const prefix = f.slice(0, sep);
+    const id = f.slice(sep + 2, -('.jsonl'.length));
+    if (!REPO_ID_RE.test(id)) continue;
+    const full = path.join(dir, f);
+    let st; try { st = await fs.stat(full); } catch { continue; }
+    let cached = repoMetaCache.get(f);
+    if (!cached || cached.mtimeMs !== st.mtimeMs) {
+      const meta = repoSessionMeta(await fs.readFile(full, 'utf-8'));
+      cached = { mtimeMs: st.mtimeMs, meta };
+      repoMetaCache.set(f, cached);
+    }
+    out.push({ id, prefix, file: f, ...cached.meta, savedAt: new Date(st.mtimeMs).toISOString() });
+  }
+  // Newest activity first (lastAt when known, else the file's mtime).
+  out.sort((a, b) => (b.lastAt || b.savedAt).localeCompare(a.lastAt || a.savedAt));
+  return out;
+}
+
+app.get('/api/claude/repo-sessions', async (_req, res) => {
+  try { res.json({ sessions: await listRepoSessions() }); }
+  catch (err) { res.status(500).json({ error: err.message || String(err) }); }
+});
+
+// Locate a session's mirrored transcript by UUID (prefix-agnostic: <anything>__<id>.jsonl).
+async function repoSessionFile(id) {
+  const dir = await conversationsDir();
+  let files; try { files = await fs.readdir(dir); } catch { return null; }
+  const match = files.find(f => f.endsWith(`__${id}.jsonl`));
+  return match ? { dir, file: match } : null;
+}
+
+// The saved conversation for a repo session (prompt/answer turns only).
+app.get('/api/claude/repo-sessions/:id/conversation', async (req, res) => {
+  try {
+    const id = String(req.params.id || '');
+    if (!REPO_ID_RE.test(id)) return res.status(400).json({ error: `invalid session id: ${id}` });
+    const hit = await repoSessionFile(id);
+    if (!hit) return res.status(404).json({ error: 'no saved transcript for this session' });
+    const raw = await fs.readFile(path.join(hit.dir, hit.file), 'utf-8');
+    res.json({ id, file: hit.file, messages: parseTranscript(raw) });
+  } catch (err) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// Resume a saved repo session in a fresh tmux window: `claude --resume <uuid>` in the
+// main repo tree. Claude replays from its own per-project store; if that was pruned we
+// first restore this session's file into it from our mirror, so the resume still works.
+// The tmux name is `claude-resume-<uuid>` (kept out of the per-BR list); the client
+// attaches to it via the Terminal page.
+app.post('/api/claude/repo-sessions/:id/resume', async (req, res) => {
+  try {
+    const id = String(req.params.id || '');
+    if (!REPO_ID_RE.test(id)) return res.status(400).json({ error: `invalid session id: ${id}` });
+    if (!(await claudeAvailable())) {
+      return res.status(400).json({ error: 'the `claude` CLI was not found on PATH inside WSL — install it or check your login shell' });
+    }
+    const hit = await repoSessionFile(id);
+    if (!hit) return res.status(404).json({ error: 'no saved transcript for this session' });
+
+    const session = `claude-resume-${id}`;
+    if (!SESSION_RE.test(session)) return res.status(400).json({ error: `invalid session name: ${session}` });
+    if (await tmuxHasSession(session)) return res.json({ session, mode: 'already-running' });
+
+    const root = await mainRepoRoot();
+    // Restore the transcript into Claude's own project store if it isn't there, so
+    // `--resume` has something to replay. The store keys off the working dir, so this
+    // mirrors the file the (Windows) claude process will look for.
+    const nativeDir = path.join(os.homedir(), '.claude', 'projects', claudeProjectSlug(root));
+    const nativeFile = path.join(nativeDir, `${id}.jsonl`);
+    try { await fs.access(nativeFile); }
+    catch {
+      await fs.mkdir(nativeDir, { recursive: true });
+      await fs.copyFile(path.join(hit.dir, hit.file), nativeFile);
+    }
+
+    const repoWsl = toWslPath(root);
+    await wsl(['tmux', 'new-session', '-d', '-s', session, '-c', repoWsl,
+      'bash', '-lc', 'exec claude --resume "$1"', 'claude-resume', id]);
+    res.status(201).json({ session, mode: 'resumed' });
+  } catch (err) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
 // ── Git: history + worktrees ──────────────────────────────────────────────────
 // Read-only views over the repo's OWN git, for the in-app Git page. Everything
 // runs through the same WSL git used for Claude worktrees, so the worktree paths
 // shown here line up with the sessions page. Field separator \x1f (unit sep) can't
 // occur in commit metadata, so parsing stays trivial.
 const GIT_LOG_FMT = ['%H', '%h', '%an', '%ae', '%at', '%D', '%s'].join('%x1f');
+
+// Is commit `sha` already contained in `ref` (i.e. merged into it)? `merge-base
+// --is-ancestor` signals the answer through its exit code — 0 = yes, 1 = no,
+// anything else (e.g. 128 when `ref` doesn't exist) is an error. execFile rejects
+// on any non-zero exit, so we treat every rejection as "not merged".
+async function gitIsAncestor(repoWsl, sha, ref) {
+  if (!sha || !ref) return false;
+  try {
+    await wsl(['git', '-C', repoWsl, 'merge-base', '--is-ancestor', sha, ref]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Does a ref resolve? `rev-parse --verify --quiet` exits non-zero (rejects) when it
+// doesn't, letting us skip ancestry probes for branches that aren't present.
+async function gitRefExists(repoWsl, ref) {
+  try {
+    await wsl(['git', '-C', repoWsl, 'rev-parse', '--verify', '--quiet', ref]);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 app.get('/api/git/worktrees', async (_req, res) => {
   try {
@@ -628,6 +787,34 @@ app.get('/api/git/worktrees', async (_req, res) => {
       }
     }
     if (worktrees[0]) worktrees[0].main = true; // git lists the primary tree first
+
+    // Enrich each worktree with lifecycle state so the Git page can colour-code the
+    // cards: merged into `main` (red), merged into `test` (yellow), or untouched for
+    // a while (violet, decided client-side from lastCommitMs). The primary tree and
+    // the main/test branches themselves are never flagged as merged — they are the
+    // destinations, not candidates for cleanup.
+    const [hasMain, hasTest] = await Promise.all([
+      gitRefExists(repoWsl, 'refs/heads/main'),
+      gitRefExists(repoWsl, 'refs/heads/test'),
+    ]);
+    await Promise.all(worktrees.map(async (wt) => {
+      if (wt.head) {
+        try {
+          const { stdout: ct } = await wsl(['git', '-C', repoWsl, 'log', '-1', '--format=%ct', wt.head]);
+          const secs = Number(ct.trim());
+          if (Number.isFinite(secs)) wt.lastCommitMs = secs * 1000;
+        } catch { /* leave lastCommitMs undefined */ }
+      }
+      const isDestination = wt.main || wt.branch === 'main' || wt.branch === 'test';
+      if (!isDestination && wt.head) {
+        const [mergedToMain, mergedToTest] = await Promise.all([
+          hasMain ? gitIsAncestor(repoWsl, wt.head, 'refs/heads/main') : Promise.resolve(false),
+          hasTest ? gitIsAncestor(repoWsl, wt.head, 'refs/heads/test') : Promise.resolve(false),
+        ]);
+        wt.mergedToMain = mergedToMain;
+        wt.mergedToTest = mergedToTest;
+      }
+    }));
     res.json({ worktrees });
   } catch (err) {
     res.status(500).json({ error: (err.stderr || err.message || String(err)).trim() });
