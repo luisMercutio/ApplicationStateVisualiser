@@ -1000,7 +1000,7 @@ activityWss.on('connection', (ws) => {
 // WebSocket ⇄ PTY bridge. Protocol:
 //   server → client : terminal output as BINARY frames; control as TEXT JSON.
 //   client → server : keystrokes as BINARY frames; {type:'resize',cols,rows} as TEXT JSON.
-wss.on('connection', (ws, req) => {
+wss.on('connection', async (ws, req) => {
   const url = new URL(req.url, 'http://localhost');
   const session = url.searchParams.get('session') || DEFAULT_TMUX_SESSION;
   let cols = clampInt(url.searchParams.get('cols'), 80, 20, 500);
@@ -1016,13 +1016,20 @@ wss.on('connection', (ws, req) => {
     return;
   }
 
+  // Start freshly-created sessions in the MAIN repo working tree, not wherever the
+  // server happens to run from (a linked worktree such as .claude/worktrees/test).
+  // For an existing session `-A` just attaches and this start-directory is ignored.
+  const startDir = toWslPath(await mainRepoRoot());
+  if (ws.readyState !== ws.OPEN) return; // client gave up while we resolved the root
+
   let term;
   try {
     // `new-session -A` attaches to <session> if it exists, or creates it — so the
     // panel degrades gracefully instead of erroring when the session isn't up yet.
     term = pty.spawn(
       'wsl.exe',
-      ['-d', WSL_DISTRO, '--', 'tmux', 'new-session', '-A', '-s', session, '-x', String(cols), '-y', String(rows)],
+      ['-d', WSL_DISTRO, '--', 'tmux', 'new-session', '-A', '-s', session,
+       '-x', String(cols), '-y', String(rows), '-c', startDir],
       // ConPTY (the node-pty default on Windows) is required here: it forwards
       // window-size changes through wsl.exe to the Linux PTY, so resizing the
       // panel actually reflows tmux. The winpty backend stays quiet in headless
