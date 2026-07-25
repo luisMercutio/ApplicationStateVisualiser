@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs').promises;
 const path = require('path');
+const os = require('os');
 const http = require('http');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
@@ -42,6 +43,9 @@ function clampInt(value, fallback, min, max) {
 
 app.use(cors());
 app.use(express.json());
+// Also accept form-encoded bodies so a shell hook can POST with a plain
+// `--data-urlencode` (see /api/session-finished) without hand-building JSON.
+app.use(express.urlencoded({ extended: false }));
 
 app.get('/api/ping', (_req, res) => res.json({ ok: true }));
 
@@ -343,7 +347,9 @@ function liveClaudeSessions() {
       { timeout: 5000, windowsHide: true }, (err, stdout) => {
         const names = err ? [] : (stdout || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean)
           .map(l => l.split(':')[0].trim()).filter(Boolean);
-        resolve(names.filter(n => n.startsWith('claude-')));
+        // `claude-resume-*` are transient resumes of a saved repo session (see the
+        // repo-sessions routes) — they belong to that list, not the per-BR one.
+        resolve(names.filter(n => n.startsWith('claude-') && !n.startsWith('claude-resume-')));
       });
   });
 }
@@ -595,39 +601,272 @@ app.post('/api/claude/sessions/:session/archive', (req, res) => archiveOrDeleteS
 // Delete a dead session entirely: git worktree(s)+branch(es) AND the conversation.
 app.delete('/api/claude/sessions/:session', (req, res) => archiveOrDeleteSession(req, res, true));
 
+// ── Repository sessions (every Claude session for this repo) ────────────────────
+// The routes above are keyed on a Business Rule (claude-<brSlug>): they only surface
+// sessions that "Submit with Claude" spawned. But EVERY session run in this repo —
+// including ad-hoc ones started by hand in tmux — is mirrored into .claude/conversations/
+// by the Stop/SessionEnd hook (sync-transcript.sh) as <prefix>__<uuid>.jsonl. These
+// routes list those transcripts one-per-session (keyed by the session UUID), so a
+// session survives closing its tmux window: its saved conversation stays viewable and
+// can be resumed (claude --resume <uuid>). No BR, worktree or live tmux required.
+const REPO_ID_RE = /^[A-Za-z0-9._-]+$/;
+
+// Single pass over a transcript → the metadata the list/tab needs. Parsing 40+ files
+// on every poll is wasteful, so callers cache this by (file, mtime).
+function repoSessionMeta(raw) {
+  let title = null, summary = null, aiTitle = null, turns = 0, startedAt = null, lastAt = null, cwd = null, gitBranch = null;
+  for (const line of raw.split(/\r?\n/)) {
+    const s = line.trim();
+    if (!s) continue;
+    let obj; try { obj = JSON.parse(s); } catch { continue; }
+    if (obj.timestamp) { if (!startedAt) startedAt = obj.timestamp; lastAt = obj.timestamp; }
+    if (!cwd && obj.cwd) cwd = obj.cwd;
+    if (!gitBranch && obj.gitBranch) gitBranch = obj.gitBranch;
+    if (obj.type === 'summary' && typeof obj.summary === 'string') summary = obj.summary;
+    // Claude writes an `ai-title` entry: a short generated NAME for the session
+    // (e.g. "Add session persistence…"). Prefer it as the row's label — it reads far
+    // better than the first prompt's words. It carries no `message`, so capture it
+    // before the message-only guard below.
+    if (obj.type === 'ai-title' && typeof obj.aiTitle === 'string') aiTitle = obj.aiTitle;
+    if (obj.isMeta || !obj.message) continue;
+    if (obj.type === 'user') {
+      if (Array.isArray(obj.message.content) && obj.message.content.every(b => b && b.type === 'tool_result')) continue;
+      const text = textFromContent(obj.message.content);
+      if (text) { turns++; if (!title) title = text.replace(/\s+/g, ' ').slice(0, 140); }
+    } else if (obj.type === 'assistant') {
+      if (textFromContent(obj.message.content)) turns++;
+    }
+  }
+  // Label preference: the generated session name → transcript summary → first prompt.
+  return { title: aiTitle || summary || title, turns, startedAt, lastAt, cwd, gitBranch };
+}
+
+const repoMetaCache = new Map(); // file → { mtimeMs, meta }
+
+// Every mirrored session for this repo: one row per transcript UUID, newest first.
+async function listRepoSessions() {
+  const dir = await conversationsDir();
+  let files;
+  try { files = await fs.readdir(dir); } catch { return []; }
+  const out = [];
+  for (const f of files) {
+    if (!f.endsWith('.jsonl')) continue;
+    const sep = f.indexOf('__');
+    if (sep <= 0) continue;
+    const prefix = f.slice(0, sep);
+    const id = f.slice(sep + 2, -('.jsonl'.length));
+    if (!REPO_ID_RE.test(id)) continue;
+    const full = path.join(dir, f);
+    let st; try { st = await fs.stat(full); } catch { continue; }
+    let cached = repoMetaCache.get(f);
+    if (!cached || cached.mtimeMs !== st.mtimeMs) {
+      const meta = repoSessionMeta(await fs.readFile(full, 'utf-8'));
+      cached = { mtimeMs: st.mtimeMs, meta };
+      repoMetaCache.set(f, cached);
+    }
+    out.push({ id, prefix, file: f, ...cached.meta, savedAt: new Date(st.mtimeMs).toISOString() });
+  }
+  // Newest activity first (lastAt when known, else the file's mtime).
+  out.sort((a, b) => (b.lastAt || b.savedAt).localeCompare(a.lastAt || a.savedAt));
+  return out;
+}
+
+app.get('/api/claude/repo-sessions', async (_req, res) => {
+  try { res.json({ sessions: await listRepoSessions() }); }
+  catch (err) { res.status(500).json({ error: err.message || String(err) }); }
+});
+
+// Locate a session's mirrored transcript by UUID (prefix-agnostic: <anything>__<id>.jsonl).
+async function repoSessionFile(id) {
+  const dir = await conversationsDir();
+  let files; try { files = await fs.readdir(dir); } catch { return null; }
+  const match = files.find(f => f.endsWith(`__${id}.jsonl`));
+  return match ? { dir, file: match } : null;
+}
+
+// The saved conversation for a repo session (prompt/answer turns only).
+app.get('/api/claude/repo-sessions/:id/conversation', async (req, res) => {
+  try {
+    const id = String(req.params.id || '');
+    if (!REPO_ID_RE.test(id)) return res.status(400).json({ error: `invalid session id: ${id}` });
+    const hit = await repoSessionFile(id);
+    if (!hit) return res.status(404).json({ error: 'no saved transcript for this session' });
+    const raw = await fs.readFile(path.join(hit.dir, hit.file), 'utf-8');
+    res.json({ id, file: hit.file, messages: parseTranscript(raw) });
+  } catch (err) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// Resume a saved repo session in a fresh tmux window: `claude --resume <uuid>` in the
+// main repo tree. Claude replays from its own per-project store; if that was pruned we
+// first restore this session's file into it from our mirror, so the resume still works.
+// The tmux name is `claude-resume-<uuid>` (kept out of the per-BR list); the client
+// attaches to it via the Terminal page.
+app.post('/api/claude/repo-sessions/:id/resume', async (req, res) => {
+  try {
+    const id = String(req.params.id || '');
+    if (!REPO_ID_RE.test(id)) return res.status(400).json({ error: `invalid session id: ${id}` });
+    if (!(await claudeAvailable())) {
+      return res.status(400).json({ error: 'the `claude` CLI was not found on PATH inside WSL — install it or check your login shell' });
+    }
+    const hit = await repoSessionFile(id);
+    if (!hit) return res.status(404).json({ error: 'no saved transcript for this session' });
+
+    const session = `claude-resume-${id}`;
+    if (!SESSION_RE.test(session)) return res.status(400).json({ error: `invalid session name: ${session}` });
+    if (await tmuxHasSession(session)) return res.json({ session, mode: 'already-running' });
+
+    const root = await mainRepoRoot();
+    // Restore the transcript into Claude's own project store if it isn't there, so
+    // `--resume` has something to replay. The store keys off the working dir, so this
+    // mirrors the file the (Windows) claude process will look for.
+    const nativeDir = path.join(os.homedir(), '.claude', 'projects', claudeProjectSlug(root));
+    const nativeFile = path.join(nativeDir, `${id}.jsonl`);
+    try { await fs.access(nativeFile); }
+    catch {
+      await fs.mkdir(nativeDir, { recursive: true });
+      await fs.copyFile(path.join(hit.dir, hit.file), nativeFile);
+    }
+
+    const repoWsl = toWslPath(root);
+    await wsl(['tmux', 'new-session', '-d', '-s', session, '-c', repoWsl,
+      'bash', '-lc', 'exec claude --resume "$1"', 'claude-resume', id]);
+    res.status(201).json({ session, mode: 'resumed' });
+  } catch (err) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
 // ── Git: history + worktrees ──────────────────────────────────────────────────
-// Read-only views over the repo's OWN git, for the in-app Git page. Everything
-// runs through the same WSL git used for Claude worktrees, so the worktree paths
-// shown here line up with the sessions page. Field separator \x1f (unit sep) can't
-// occur in commit metadata, so parsing stays trivial.
+// Read-only views over the repo's OWN git for the in-app Git page, plus the
+// mutating actions below (drop a commit, remove a worktree, merge one branch into
+// another). These run through WINDOWS git (git.exe), not WSL git: the repo's
+// worktrees were created by Windows git and store Windows paths, so WSL git lists
+// every one of them as "prunable" (its gitdir pointer is a C:\ path WSL can't
+// resolve) and can't operate on them. Windows git sees them correctly. Field
+// separator \x1f (unit sep) can't occur in commit metadata, so parsing stays trivial.
 const GIT_LOG_FMT = ['%H', '%h', '%an', '%ae', '%at', '%D', '%s'].join('%x1f');
+const REF_RE = /^[A-Za-z0-9._/-]+$/;      // branch name or ref, no room for extra args
+const SHA_RE = /^[0-9a-fA-F]{4,40}$/;     // abbreviated or full commit sha
+
+// Run Windows git (no shell). Longer timeout than wsl(): a rebase/merge can take
+// a moment. Resolves with { stdout, stderr }; rejects with those attached on failure.
+function gitWin(args, opts = {}) {
+  return execFileP('git', args, { timeout: 60000, windowsHide: true, ...opts });
+}
+
+// Parse `git worktree list --porcelain` into structured entries. git lists the
+// primary tree first, so entry 0 is flagged as `main`.
+function parseWorktrees(stdout) {
+  const worktrees = [];
+  let cur = null;
+  for (const line of stdout.split(/\r?\n/)) {
+    if (line.startsWith('worktree ')) {
+      cur = { path: line.slice('worktree '.length), head: null, branch: null,
+              detached: false, bare: false, locked: false };
+      worktrees.push(cur);
+    } else if (!cur) {
+      continue;
+    } else if (line.startsWith('HEAD ')) {
+      cur.head = line.slice('HEAD '.length);
+    } else if (line.startsWith('branch ')) {
+      cur.branch = line.slice('branch '.length).replace(/^refs\/heads\//, '');
+    } else if (line === 'detached') {
+      cur.detached = true;
+    } else if (line === 'bare') {
+      cur.bare = true;
+    } else if (line === 'locked' || line.startsWith('locked ')) {
+      cur.locked = true;
+    }
+  }
+  if (worktrees[0]) worktrees[0].main = true;
+  return worktrees;
+}
+
+async function listWorktreesWin() {
+  const root = await mainRepoRoot();
+  const { stdout } = await gitWin(['-C', root, 'worktree', 'list', '--porcelain']);
+  return parseWorktrees(stdout);
+}
+
+// The main and test worktrees (and their branches) are off-limits to destructive
+// actions — see the FIXED RULE in CLAUDE.md. Guard on the main flag AND the branch
+// name AND the path's own basename, so no single mislabel can slip a protected tree
+// through.
+function isProtectedWorktree(wt) {
+  const base = String(wt.path || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop();
+  return !!wt.main || wt.branch === 'main' || wt.branch === 'test' || base === 'test';
+}
+function isProtectedBranch(branch) {
+  return branch === 'main' || branch === 'test';
+}
+
+// A worktree's path as git listed it, resolved to an absolute Windows path so it
+// can be handed back to `git -C`. Absolute C:/… paths pass through unchanged; the
+// rare relative form (a broken worktree) resolves against the repo root.
+function resolveWtPath(p, root) {
+  return path.isAbsolute(p) || /^[A-Za-z]:/.test(p) ? p : path.resolve(root, p);
+}
+
+// Is commit `sha` already contained in `ref` (i.e. merged into it)? `merge-base
+// --is-ancestor` signals the answer through its exit code — 0 = yes, 1 = no,
+// anything else (e.g. 128 when `ref` doesn't exist) is an error. execFile rejects
+// on any non-zero exit, so we treat every rejection as "not merged".
+async function gitIsAncestor(root, sha, ref) {
+  if (!sha || !ref) return false;
+  try {
+    await gitWin(['-C', root, 'merge-base', '--is-ancestor', sha, ref]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Does a ref resolve? `rev-parse --verify --quiet` exits non-zero (rejects) when it
+// doesn't, letting us skip ancestry probes for branches that aren't present.
+async function gitRefExists(root, ref) {
+  try {
+    await gitWin(['-C', root, 'rev-parse', '--verify', '--quiet', ref]);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 app.get('/api/git/worktrees', async (_req, res) => {
   try {
-    const repoWsl = toWslPath(__dirname);
-    const { stdout } = await wsl(['git', '-C', repoWsl, 'worktree', 'list', '--porcelain']);
-    const worktrees = [];
-    let cur = null;
-    for (const line of stdout.split(/\r?\n/)) {
-      if (line.startsWith('worktree ')) {
-        cur = { path: line.slice('worktree '.length), head: null, branch: null,
-                detached: false, bare: false, locked: false };
-        worktrees.push(cur);
-      } else if (!cur) {
-        continue;
-      } else if (line.startsWith('HEAD ')) {
-        cur.head = line.slice('HEAD '.length);
-      } else if (line.startsWith('branch ')) {
-        cur.branch = line.slice('branch '.length).replace(/^refs\/heads\//, '');
-      } else if (line === 'detached') {
-        cur.detached = true;
-      } else if (line === 'bare') {
-        cur.bare = true;
-      } else if (line === 'locked' || line.startsWith('locked ')) {
-        cur.locked = true;
+    const root = await mainRepoRoot();
+    const worktrees = await listWorktreesWin();
+
+    // Enrich each worktree with lifecycle state so the Git page can colour-code the
+    // cards: merged into `main` (red), merged into `test` (yellow), or untouched for
+    // a while (violet, decided client-side from lastCommitMs). The primary tree and
+    // the main/test branches themselves are never flagged as merged — they are the
+    // destinations, not candidates for cleanup. All git calls go through Windows git
+    // (gitWin) so WSL never marks the repo's worktrees prunable.
+    const [hasMain, hasTest] = await Promise.all([
+      gitRefExists(root, 'refs/heads/main'),
+      gitRefExists(root, 'refs/heads/test'),
+    ]);
+    await Promise.all(worktrees.map(async (wt) => {
+      if (wt.head) {
+        try {
+          const { stdout: ct } = await gitWin(['-C', root, 'log', '-1', '--format=%ct', wt.head]);
+          const secs = Number(ct.trim());
+          if (Number.isFinite(secs)) wt.lastCommitMs = secs * 1000;
+        } catch { /* leave lastCommitMs undefined */ }
       }
-    }
-    if (worktrees[0]) worktrees[0].main = true; // git lists the primary tree first
+      const isDestination = wt.main || wt.branch === 'main' || wt.branch === 'test';
+      if (!isDestination && wt.head) {
+        const [mergedToMain, mergedToTest] = await Promise.all([
+          hasMain ? gitIsAncestor(root, wt.head, 'refs/heads/main') : Promise.resolve(false),
+          hasTest ? gitIsAncestor(root, wt.head, 'refs/heads/test') : Promise.resolve(false),
+        ]);
+        wt.mergedToMain = mergedToMain;
+        wt.mergedToTest = mergedToTest;
+      }
+    }));
     res.json({ worktrees });
   } catch (err) {
     res.status(500).json({ error: (err.stderr || err.message || String(err)).trim() });
@@ -636,18 +875,18 @@ app.get('/api/git/worktrees', async (_req, res) => {
 
 app.get('/api/git/log', async (req, res) => {
   try {
-    const repoWsl = toWslPath(__dirname);
+    const root = await mainRepoRoot();
     const limit = clampInt(req.query.limit, 100, 1, 1000);
     // Optional ref (branch name or sha) to scope the log to one worktree's branch.
     // Constrain it to ref-safe characters so it can't smuggle extra git args.
     const ref = String(req.query.ref || '').trim();
-    if (ref && !/^[A-Za-z0-9._/-]+$/.test(ref)) {
+    if (ref && !REF_RE.test(ref)) {
       return res.status(400).json({ error: 'invalid ref' });
     }
-    const args = ['git', '-C', repoWsl, 'log', `--pretty=format:${GIT_LOG_FMT}`, '-n', String(limit)];
+    const args = ['-C', root, 'log', `--pretty=format:${GIT_LOG_FMT}`, '-n', String(limit)];
     if (ref) args.push(ref);
     args.push('--'); // terminate revisions: nothing after is treated as a pathspec
-    const { stdout } = await wsl(args);
+    const { stdout } = await gitWin(args);
     const commits = stdout.split(/\r?\n/).filter(Boolean).map((line) => {
       const [hash, short, author, email, at, refs, subject] = line.split('\x1f');
       return {
@@ -658,6 +897,110 @@ app.get('/api/git/log', async (req, res) => {
       };
     });
     res.json({ commits });
+  } catch (err) {
+    res.status(500).json({ error: (err.stderr || err.message || String(err)).trim() });
+  }
+});
+
+// ── Git: mutating actions (drop commit, remove worktree, merge branches) ───────
+// Each rewrites or removes real history, so they validate their inputs against
+// REF_RE/SHA_RE (no extra-argument injection), refuse to touch the protected
+// main/test worktrees, and roll back (rebase/merge --abort) on any failure so the
+// working tree is never left mid-operation.
+
+// Drop a single commit from a branch. The branch must be checked out in a worktree
+// (every feature branch here is): we rebase inside that worktree, replaying the
+// commits after <sha> onto <sha>'s parent, which removes exactly <sha>.
+app.post('/api/git/drop-commit', async (req, res) => {
+  try {
+    const branch = String(req.body?.branch || '').trim();
+    const sha = String(req.body?.sha || '').trim();
+    if (!REF_RE.test(branch)) return res.status(400).json({ error: 'invalid branch' });
+    if (!SHA_RE.test(sha)) return res.status(400).json({ error: 'invalid sha' });
+    if (isProtectedBranch(branch)) {
+      return res.status(403).json({ error: `refusing to rewrite history of the ${branch} branch` });
+    }
+    const root = await mainRepoRoot();
+    const wt = (await listWorktreesWin()).find(w => w.branch === branch);
+    if (!wt) return res.status(404).json({ error: `branch ${branch} is not checked out in any worktree` });
+    const wtPath = resolveWtPath(wt.path, root);
+
+    try {
+      // `rebase --onto <sha>^ <sha>` takes the range <sha>..HEAD and replays it onto
+      // <sha>'s parent, dropping <sha> itself. HEAD here is the worktree's branch.
+      await gitWin(['-C', wtPath, 'rebase', '--onto', `${sha}^`, sha]);
+    } catch (e) {
+      await gitWin(['-C', wtPath, 'rebase', '--abort']).catch(() => {});
+      const msg = (e.stderr || e.message || String(e)).trim();
+      return res.status(409).json({ error: `could not drop commit (rebase aborted): ${msg}` });
+    }
+    const { stdout } = await gitWin(['-C', wtPath, 'rev-parse', 'HEAD']);
+    res.json({ ok: true, branch, dropped: sha, head: stdout.trim() });
+  } catch (err) {
+    res.status(500).json({ error: (err.stderr || err.message || String(err)).trim() });
+  }
+});
+
+// Remove a worktree by its path (as listed by /api/git/worktrees). Never the main
+// or test worktree. Without force, git refuses when the tree has changes; the
+// client can re-request with force:true after confirming.
+app.post('/api/git/worktrees/remove', async (req, res) => {
+  try {
+    const target = String(req.body?.path || '').trim();
+    if (!target) return res.status(400).json({ error: 'path is required' });
+    const force = req.body?.force === true;
+    const root = await mainRepoRoot();
+    const wt = (await listWorktreesWin()).find(w => w.path === target);
+    if (!wt) return res.status(404).json({ error: 'no worktree at that path' });
+    if (isProtectedWorktree(wt)) {
+      return res.status(403).json({ error: 'refusing to remove the main or test worktree' });
+    }
+    const args = ['-C', root, 'worktree', 'remove'];
+    if (force) args.push('--force');
+    args.push(resolveWtPath(wt.path, root));
+    try {
+      await gitWin(args);
+    } catch (e) {
+      const msg = (e.stderr || e.message || String(e)).trim();
+      // Signal "needs force" distinctly so the client can offer a force retry.
+      const needsForce = /use\s+--force|contains modified|untracked|not empty|locked working tree/i.test(msg);
+      return res.status(needsForce ? 409 : 500).json({ error: msg, needsForce });
+    }
+    res.json({ ok: true, removed: wt.path, branch: wt.branch });
+  } catch (err) {
+    res.status(500).json({ error: (err.stderr || err.message || String(err)).trim() });
+  }
+});
+
+// Merge one branch into another. The target branch must be checked out in a
+// worktree; we merge inside it (--no-edit for a non-interactive commit message).
+// On conflict or any failure the merge is aborted, leaving the target untouched.
+app.post('/api/git/merge', async (req, res) => {
+  try {
+    const from = String(req.body?.from || '').trim();
+    const into = String(req.body?.into || '').trim();
+    if (!REF_RE.test(from)) return res.status(400).json({ error: 'invalid source branch' });
+    if (!REF_RE.test(into)) return res.status(400).json({ error: 'invalid target branch' });
+    if (from === into) return res.status(400).json({ error: 'source and target are the same branch' });
+    const root = await mainRepoRoot();
+    const worktrees = await listWorktreesWin();
+    const target = worktrees.find(w => w.branch === into);
+    if (!target) return res.status(404).json({ error: `target branch ${into} is not checked out in any worktree` });
+    if (!worktrees.some(w => w.branch === from)) {
+      // Not fatal if the branch exists but isn't checked out; verify it resolves.
+      try { await gitWin(['-C', root, 'rev-parse', '--verify', `refs/heads/${from}`]); }
+      catch { return res.status(404).json({ error: `source branch ${from} not found` }); }
+    }
+    const wtPath = resolveWtPath(target.path, root);
+    try {
+      const { stdout } = await gitWin(['-C', wtPath, 'merge', '--no-edit', from]);
+      const head = (await gitWin(['-C', wtPath, 'rev-parse', 'HEAD'])).stdout.trim();
+      res.json({ ok: true, from, into, head, output: stdout.trim() });
+    } catch (e) {
+      await gitWin(['-C', wtPath, 'merge', '--abort']).catch(() => {});
+      const msg = (e.stderr || e.stdout || e.message || String(e)).trim();
+      return res.status(409).json({ error: `merge aborted: ${msg}` });
+    }
   } catch (err) {
     res.status(500).json({ error: (err.stderr || err.message || String(err)).trim() });
   }
@@ -910,6 +1253,22 @@ function broadcastActivity(msg) {
   }
 }
 
+// Exact "a tmux session finished a Claude turn" signal, posted by the Stop hook
+// running *inside* that tmux session (it knows `tmux display-message -p '#S'`).
+// Unlike the ntfy feed — which names runs by directory and needs fuzzy matching —
+// this carries the picker's session name verbatim, so the client flags it directly.
+// Deliberately NOT pushed to activityBuffer: it's a badge signal, not an Activity
+// feed entry, and must not appear on the Activity page or be replayed as backlog.
+app.post('/api/session-finished', (req, res) => {
+  const session = String((req.body && req.body.session) || '').trim();
+  if (!session) return res.status(400).json({ error: 'session required' });
+  const frame = JSON.stringify({ type: 'session-finished', session });
+  for (const ws of activityClients) {
+    if (ws.readyState === ws.OPEN) ws.send(frame);
+  }
+  res.json({ ok: true });
+});
+
 function scheduleNtfyReconnect() {
   if (ntfyReconnectTimer) return; // already pending — don't stack reconnects
   ntfyReconnectTimer = setTimeout(() => {
@@ -1000,7 +1359,7 @@ activityWss.on('connection', (ws) => {
 // WebSocket ⇄ PTY bridge. Protocol:
 //   server → client : terminal output as BINARY frames; control as TEXT JSON.
 //   client → server : keystrokes as BINARY frames; {type:'resize',cols,rows} as TEXT JSON.
-wss.on('connection', (ws, req) => {
+wss.on('connection', async (ws, req) => {
   const url = new URL(req.url, 'http://localhost');
   const session = url.searchParams.get('session') || DEFAULT_TMUX_SESSION;
   let cols = clampInt(url.searchParams.get('cols'), 80, 20, 500);
@@ -1016,13 +1375,20 @@ wss.on('connection', (ws, req) => {
     return;
   }
 
+  // Start freshly-created sessions in the MAIN repo working tree, not wherever the
+  // server happens to run from (a linked worktree such as .claude/worktrees/test).
+  // For an existing session `-A` just attaches and this start-directory is ignored.
+  const startDir = toWslPath(await mainRepoRoot());
+  if (ws.readyState !== ws.OPEN) return; // client gave up while we resolved the root
+
   let term;
   try {
     // `new-session -A` attaches to <session> if it exists, or creates it — so the
     // panel degrades gracefully instead of erroring when the session isn't up yet.
     term = pty.spawn(
       'wsl.exe',
-      ['-d', WSL_DISTRO, '--', 'tmux', 'new-session', '-A', '-s', session, '-x', String(cols), '-y', String(rows)],
+      ['-d', WSL_DISTRO, '--', 'tmux', 'new-session', '-A', '-s', session,
+       '-x', String(cols), '-y', String(rows), '-c', startDir],
       // ConPTY (the node-pty default on Windows) is required here: it forwards
       // window-size changes through wsl.exe to the Linux PTY, so resizing the
       // panel actually reflows tmux. The winpty backend stays quiet in headless

@@ -7,6 +7,7 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatMenuModule } from '@angular/material/menu';
 import { MatDividerModule } from '@angular/material/divider';
+import { MatBadgeModule } from '@angular/material/badge';
 import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { Store } from '@ngrx/store';
 import { FormsModule } from '@angular/forms';
@@ -17,6 +18,7 @@ import { SaveLayoutDialogComponent } from '../save-layout-dialog/save-layout-dia
 import { ApplicationsManagerDialogComponent } from '../applications-manager-dialog/applications-manager-dialog.component';
 import { selectActiveApplication } from '../../store/applications/applications.selectors';
 import { AppPage, NAV_PAGES } from '../../models/app-page.model';
+import { SessionActivityService } from '../../services/session-activity.service';
 import { filter } from 'rxjs';
 
 @Component({
@@ -24,7 +26,7 @@ import { filter } from 'rxjs';
   standalone: true,
   imports: [MatToolbarModule, MatButtonModule, MatIconModule, MatSelectModule,
             MatFormFieldModule, MatTooltipModule, MatMenuModule, MatDividerModule,
-            MatDialogModule, FormsModule],
+            MatBadgeModule, MatDialogModule, FormsModule],
   template: `
     <mat-toolbar color="primary" class="app-toolbar">
       <mat-icon class="title-icon">account_tree</mat-icon>
@@ -34,7 +36,11 @@ import { filter } from 'rxjs';
 
       <!-- Page navigation (inline on desktop, collapsed into the menu on mobile) -->
       @for (nav of navPages; track nav.page) {
-        <button mat-button class="nav-btn desktop-only" [class.active]="page() === nav.page" (click)="navigate.emit(nav.page)">
+        <button mat-button class="nav-btn desktop-only" [class.active]="page() === nav.page" (click)="navigate.emit(nav.page)"
+                [matBadge]="sessionActivity.count()"
+                [matBadgeHidden]="nav.page !== 'terminal' || sessionActivity.count() === 0"
+                matBadgeColor="warn" matBadgeSize="small" matBadgeOverlap="false"
+                [matTooltip]="nav.page === 'terminal' && sessionActivity.count() ? sessionActivity.count() + ' session(s) finished a turn' : ''">
           <mat-icon>{{ nav.icon }}</mat-icon> {{ nav.label }}
         </button>
       }
@@ -92,7 +98,9 @@ import { filter } from 'rxjs';
       <mat-menu #mobileMenu="matMenu">
         @for (nav of navPages; track nav.page) {
           <button mat-menu-item [class.active-item]="page() === nav.page" (click)="navigate.emit(nav.page)">
-            <mat-icon>{{ nav.icon }}</mat-icon>
+            <mat-icon [matBadge]="sessionActivity.count()"
+                      [matBadgeHidden]="nav.page !== 'terminal' || sessionActivity.count() === 0"
+                      matBadgeColor="warn" matBadgeSize="small">{{ nav.icon }}</mat-icon>
             <span>{{ nav.label }}</span>
           </button>
         }
@@ -157,6 +165,9 @@ import { filter } from 'rxjs';
 export class ToolbarComponent {
   private store = inject(Store);
   private dialog = inject(MatDialog);
+  // Injected so the toolbar drives the app-wide activity connection into existence
+  // at startup (it's the always-mounted host), and to badge the Terminal tab.
+  protected sessionActivity = inject(SessionActivityService);
 
   page = input<AppPage>('br-list');
   navigate = output<AppPage>();

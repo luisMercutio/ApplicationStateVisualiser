@@ -22,4 +22,9 @@ export interface GitWorktree {
   bare: boolean;
   locked: boolean;
   main?: boolean;           // the primary working tree (first entry git lists)
+  // Lifecycle state used to colour-code the card. Absent on the main tree and on
+  // the main/test branches themselves (they are merge destinations, not candidates).
+  mergedToMain?: boolean;   // this worktree's HEAD is already contained in `main`
+  mergedToTest?: boolean;   // …contained in `test`
+  lastCommitMs?: number;    // committer date of its HEAD, epoch ms (for a "stale" check)
 }
