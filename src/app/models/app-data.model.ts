@@ -55,22 +55,10 @@ export interface AppBusinessRuleInput {
   needsToBeEstablished?: boolean;
 }
 
-// A live Claude session spawned by "Submit with Claude": a tmux session running
-// the claude CLI in a per-BR git worktree. `running` is derived from tmux; the
-// BR/branch/worktree join is filled in client-side from the rule's delta.
-export interface ClaudeSession {
-  name: string;              // tmux session name, e.g. claude-br-042
-  running: boolean;
-  brName?: string;
-  branch?: string;
-  worktree?: string;
-  hasTranscript?: boolean;   // an archived transcript exists → conversation is viewable
-}
-
 // Any Claude session that ran in this repo — one row per saved transcript UUID,
-// mirrored into .claude/conversations/ by the Stop/SessionEnd hook. Unlike
-// ClaudeSession these aren't tied to a Business Rule or a live tmux session: they
-// survive closing the tmux window and can be viewed or resumed (claude --resume).
+// mirrored into .claude/conversations/ by the Stop/SessionEnd hook. These aren't
+// tied to a Business Rule or a live tmux session: they survive closing the tmux
+// window and can be viewed or resumed (claude --resume).
 export interface RepoSession {
   id: string;                // session UUID (== claude --resume <id>)
   prefix: string;            // source working-tree basename (repo name or BR slug)

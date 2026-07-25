@@ -331,55 +331,6 @@ async function listArchives() {
   return { bySlug, dated };
 }
 
-// Base slugs of the per-BR worktrees that currently exist on disk (../ASV-worktrees/*,
-// each named `<slug>-YYYYMMDD`). Resolved against the main repo root.
-async function worktreeSlugs() {
-  try {
-    const entries = await fs.readdir(await asvWorktreesDir(), { withFileTypes: true });
-    return entries.filter(e => e.isDirectory()).map(e => baseSlug(e.name));
-  } catch { return []; }
-}
-
-// Live claude-* tmux session names (empty when no tmux server is running).
-function liveClaudeSessions() {
-  return new Promise(resolve => {
-    execFile('wsl.exe', ['-d', WSL_DISTRO, '--', 'tmux', 'ls'],
-      { timeout: 5000, windowsHide: true }, (err, stdout) => {
-        const names = err ? [] : (stdout || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean)
-          .map(l => l.split(':')[0].trim()).filter(Boolean);
-        // `claude-resume-*` are transient resumes of a saved repo session (see the
-        // repo-sessions routes) — they belong to that list, not the per-BR one.
-        resolve(names.filter(n => n.startsWith('claude-') && !n.startsWith('claude-resume-')));
-      });
-  });
-}
-
-// List Claude sessions: running (live in tmux) AND dead (a worktree or an archived
-// transcript exists, but no live tmux session). Liveness is derived from tmux, not
-// stored, so it survives a server restart. The BR/branch join happens client-side.
-app.get('/api/claude/sessions', async (_req, res) => {
-  try {
-    const [live, wts, arch] = await Promise.all([liveClaudeSessions(), worktreeSlugs(), listArchives()]);
-    const bySession = new Map();
-    const add = (name, running, hasTranscript) => {
-      const cur = bySession.get(name);
-      if (cur) { cur.running = cur.running || running; cur.hasTranscript = cur.hasTranscript || hasTranscript; }
-      else bySession.set(name, { name, running, hasTranscript });
-    };
-    for (const name of live) add(name, true, false);
-    for (const slug of wts) add(`claude-${slug}`, false, arch.bySlug.has(slug));
-    // Dead sessions whose worktree was removed but a dated transcript survives.
-    for (const slug of arch.dated) add(`claude-${slug}`, false, true);
-    // Live sessions may also have an archive from an earlier Stop.
-    for (const [name, s] of bySession) {
-      if (arch.bySlug.has(name.slice('claude-'.length))) s.hasTranscript = true;
-    }
-    res.json({ sessions: [...bySession.values()] });
-  } catch (err) {
-    res.status(500).json({ error: err.message || String(err) });
-  }
-});
-
 // Reduce a Claude Code transcript JSONL to the prompt/answer thread: user text and
 // assistant text only — no thinking, tool_use or tool_result blocks.
 function textFromContent(content) {
@@ -411,25 +362,6 @@ function parseTranscript(raw) {
   }
   return out;
 }
-
-// The archived conversation for a session (most recent transcript), prompt/answer only.
-app.get('/api/claude/sessions/:session/conversation', async (req, res) => {
-  try {
-    const session = String(req.params.session || '');
-    if (!SESSION_RE.test(session) || !session.startsWith('claude-')) {
-      return res.status(400).json({ error: `invalid session name: ${session}` });
-    }
-    const slug = session.slice('claude-'.length);
-    const list = (await listArchives()).bySlug.get(slug);
-    if (!list || !list.length) return res.status(404).json({ error: 'no transcript has been archived for this session yet' });
-    list.sort((a, b) => b.mtimeMs - a.mtimeMs);
-    const chosen = list[0];
-    const raw = await fs.readFile(path.join(await conversationsDir(), chosen.file), 'utf-8');
-    res.json({ session, sessionId: chosen.uuid, file: chosen.file, messages: parseTranscript(raw) });
-  } catch (err) {
-    res.status(500).json({ error: err.message || String(err) });
-  }
-});
 
 // Reopen a dead session. Claude replays its OWN per-project transcript store
 // (~/.claude/projects/<slug>/ inside WSL), so we: (1) resume when that store is
