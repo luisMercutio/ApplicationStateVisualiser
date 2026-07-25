@@ -77,6 +77,11 @@ If `--ff-only` fails (diverged history): abort and tell the user to resolve conf
 
 ## Step 4 — Remove the worktree
 
+> **FIXED RULE — never delete the `main` or `test` worktree.** Before removing anything,
+> confirm `<worktree-path>` is the Epic's own dated/feature worktree and is **not** the
+> `main` worktree or the `test` worktree. If it resolves to either, **abort immediately** —
+> do not remove, prune, or `rm -rf` it under any circumstances.
+
 If `<worktree-path>` was found in Step 2:
 
 ```bash

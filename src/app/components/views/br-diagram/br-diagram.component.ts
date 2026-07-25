@@ -9,7 +9,7 @@ import { categoryColor } from '../../../models/business-rule.model';
 import { TechnicalSpec } from '../../../models/technical-spec.model';
 import { selectAppRules } from '../../../store/app-data/app-data.selectors';
 import { selectSpecByRuleId } from '../../../store/technical-specs/technical-specs.selectors';
-import { selectActiveConnection } from '../../../store/connections/connections.selectors';
+import { selectActiveApplication } from '../../../store/applications/applications.selectors';
 import { WorkspaceService } from '../../../services/workspace.service';
 import { MermaidService } from '../../../services/mermaid.service';
 
@@ -150,7 +150,7 @@ export class BrDiagramComponent {
   private selectedId = this.workspace.brDiagramId;
   private rules = toSignal(this.store.select(selectAppRules), { initialValue: [] as AppBusinessRule[] });
   private specByRule = toSignal(this.store.select(selectSpecByRuleId), { initialValue: {} as Record<string, TechnicalSpec> });
-  private active = toSignal(this.store.select(selectActiveConnection), { initialValue: null });
+  private active = toSignal(this.store.select(selectActiveApplication), { initialValue: null });
 
   rule = computed(() => this.rules().find((r) => r.creationIndex === this.selectedId()) ?? null);
   spec = computed<TechnicalSpec | null>(() => this.specByRule()[this.selectedId()] ?? null);

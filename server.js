@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs').promises;
 const path = require('path');
+const os = require('os');
 const http = require('http');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
@@ -42,6 +43,9 @@ function clampInt(value, fallback, min, max) {
 
 app.use(cors());
 app.use(express.json());
+// Also accept form-encoded bodies so a shell hook can POST with a plain
+// `--data-urlencode` (see /api/session-finished) without hand-building JSON.
+app.use(express.urlencoded({ extended: false }));
 
 app.get('/api/ping', (_req, res) => res.json({ ok: true }));
 
@@ -327,53 +331,6 @@ async function listArchives() {
   return { bySlug, dated };
 }
 
-// Base slugs of the per-BR worktrees that currently exist on disk (../ASV-worktrees/*,
-// each named `<slug>-YYYYMMDD`). Resolved against the main repo root.
-async function worktreeSlugs() {
-  try {
-    const entries = await fs.readdir(await asvWorktreesDir(), { withFileTypes: true });
-    return entries.filter(e => e.isDirectory()).map(e => baseSlug(e.name));
-  } catch { return []; }
-}
-
-// Live claude-* tmux session names (empty when no tmux server is running).
-function liveClaudeSessions() {
-  return new Promise(resolve => {
-    execFile('wsl.exe', ['-d', WSL_DISTRO, '--', 'tmux', 'ls'],
-      { timeout: 5000, windowsHide: true }, (err, stdout) => {
-        const names = err ? [] : (stdout || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean)
-          .map(l => l.split(':')[0].trim()).filter(Boolean);
-        resolve(names.filter(n => n.startsWith('claude-')));
-      });
-  });
-}
-
-// List Claude sessions: running (live in tmux) AND dead (a worktree or an archived
-// transcript exists, but no live tmux session). Liveness is derived from tmux, not
-// stored, so it survives a server restart. The BR/branch join happens client-side.
-app.get('/api/claude/sessions', async (_req, res) => {
-  try {
-    const [live, wts, arch] = await Promise.all([liveClaudeSessions(), worktreeSlugs(), listArchives()]);
-    const bySession = new Map();
-    const add = (name, running, hasTranscript) => {
-      const cur = bySession.get(name);
-      if (cur) { cur.running = cur.running || running; cur.hasTranscript = cur.hasTranscript || hasTranscript; }
-      else bySession.set(name, { name, running, hasTranscript });
-    };
-    for (const name of live) add(name, true, false);
-    for (const slug of wts) add(`claude-${slug}`, false, arch.bySlug.has(slug));
-    // Dead sessions whose worktree was removed but a dated transcript survives.
-    for (const slug of arch.dated) add(`claude-${slug}`, false, true);
-    // Live sessions may also have an archive from an earlier Stop.
-    for (const [name, s] of bySession) {
-      if (arch.bySlug.has(name.slice('claude-'.length))) s.hasTranscript = true;
-    }
-    res.json({ sessions: [...bySession.values()] });
-  } catch (err) {
-    res.status(500).json({ error: err.message || String(err) });
-  }
-});
-
 // Reduce a Claude Code transcript JSONL to the prompt/answer thread: user text and
 // assistant text only — no thinking, tool_use or tool_result blocks.
 function textFromContent(content) {
@@ -405,25 +362,6 @@ function parseTranscript(raw) {
   }
   return out;
 }
-
-// The archived conversation for a session (most recent transcript), prompt/answer only.
-app.get('/api/claude/sessions/:session/conversation', async (req, res) => {
-  try {
-    const session = String(req.params.session || '');
-    if (!SESSION_RE.test(session) || !session.startsWith('claude-')) {
-      return res.status(400).json({ error: `invalid session name: ${session}` });
-    }
-    const slug = session.slice('claude-'.length);
-    const list = (await listArchives()).bySlug.get(slug);
-    if (!list || !list.length) return res.status(404).json({ error: 'no transcript has been archived for this session yet' });
-    list.sort((a, b) => b.mtimeMs - a.mtimeMs);
-    const chosen = list[0];
-    const raw = await fs.readFile(path.join(await conversationsDir(), chosen.file), 'utf-8');
-    res.json({ session, sessionId: chosen.uuid, file: chosen.file, messages: parseTranscript(raw) });
-  } catch (err) {
-    res.status(500).json({ error: err.message || String(err) });
-  }
-});
 
 // Reopen a dead session. Claude replays its OWN per-project transcript store
 // (~/.claude/projects/<slug>/ inside WSL), so we: (1) resume when that store is
@@ -520,39 +458,347 @@ app.post('/api/claude/sessions/:session/kill', async (req, res) => {
   }
 });
 
+// Remove a dead session's git footprint: every ../ASV-worktrees/<slug>-YYYYMMDD
+// worktree for this BR and the matching claude/<slug>[-YYYYMMDD] branches. Only
+// ever touches paths under ASV-worktrees, so the main and test worktrees are never
+// at risk (see the FIXED RULE in CLAUDE.md).
+async function removeSessionGitFootprint(slug) {
+  const root = await mainRepoRoot();
+  const repoWsl = toWslPath(root);
+  const removedWorktrees = [];
+  const removedBranches = [];
+
+  let dirs = [];
+  try {
+    const entries = await fs.readdir(await asvWorktreesDir(), { withFileTypes: true });
+    dirs = entries.filter(e => e.isDirectory() && baseSlug(e.name) === slug).map(e => e.name);
+  } catch { /* no worktrees dir */ }
+  for (const name of dirs) {
+    const wtWsl = toWslPath(path.resolve(root, '..', 'ASV-worktrees', name));
+    if (!/\/ASV-worktrees\//.test(wtWsl)) continue; // guard: never outside ASV-worktrees
+    await wsl(['git', '-C', repoWsl, 'worktree', 'remove', '--force', wtWsl]).catch(() => {});
+    removedWorktrees.push(name);
+  }
+
+  // Delete the branch(es) for this slug (claude/<slug> and claude/<slug>-YYYYMMDD).
+  const listed = await wsl(['git', '-C', repoWsl, 'branch', '--list', `claude/${slug}`, `claude/${slug}-*`])
+    .catch(() => ({ stdout: '' }));
+  const branches = listed.stdout.split(/\r?\n/).map(l => l.replace(/^[*+]?\s*/, '').trim()).filter(Boolean)
+    .filter(b => baseSlug(b.replace(/^claude\//, '')) === slug);
+  for (const b of branches) {
+    await wsl(['git', '-C', repoWsl, 'branch', '-D', b]).catch(() => {});
+    removedBranches.push(b);
+  }
+  return { removedWorktrees, removedBranches };
+}
+
+// Archive or delete a DEAD session's cleanup. Archive files the transcript(s) away
+// under .claude/conversations/archived/ (kept on disk); delete removes them.
+async function archiveOrDeleteSession(req, res, deleteTranscript) {
+  try {
+    const session = String(req.params.session || '');
+    if (!SESSION_RE.test(session) || !session.startsWith('claude-')) {
+      return res.status(400).json({ error: `invalid session name: ${session}` });
+    }
+    const slug = session.slice('claude-'.length);
+    if (await tmuxHasSession(session)) {
+      return res.status(409).json({ error: 'session is running — kill it before archiving or deleting' });
+    }
+
+    const { removedWorktrees, removedBranches } = await removeSessionGitFootprint(slug);
+
+    const dir = await conversationsDir();
+    const list = (await listArchives()).bySlug.get(slug) || [];
+    if (deleteTranscript) {
+      for (const t of list) await fs.unlink(path.join(dir, t.file)).catch(() => {});
+    } else {
+      const archivedDir = path.join(dir, 'archived');
+      await fs.mkdir(archivedDir, { recursive: true });
+      for (const t of list) await fs.rename(path.join(dir, t.file), path.join(archivedDir, t.file)).catch(() => {});
+    }
+
+    res.json({
+      session, mode: deleteTranscript ? 'deleted' : 'archived',
+      removedWorktrees, removedBranches, transcripts: list.length,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+}
+
+// Archive a dead session: drop its git worktree(s)+branch(es), keep the conversation
+// (moved under .claude/conversations/archived/). The row leaves the list.
+app.post('/api/claude/sessions/:session/archive', (req, res) => archiveOrDeleteSession(req, res, false));
+
+// Delete a dead session entirely: git worktree(s)+branch(es) AND the conversation.
+app.delete('/api/claude/sessions/:session', (req, res) => archiveOrDeleteSession(req, res, true));
+
+// ── Repository sessions (every Claude session for this repo) ────────────────────
+// The routes above are keyed on a Business Rule (claude-<brSlug>): they only surface
+// sessions that "Submit with Claude" spawned. But EVERY session run in this repo —
+// including ad-hoc ones started by hand in tmux — is mirrored into .claude/conversations/
+// by the Stop/SessionEnd hook (sync-transcript.sh) as <prefix>__<uuid>.jsonl. These
+// routes list those transcripts one-per-session (keyed by the session UUID), so a
+// session survives closing its tmux window: its saved conversation stays viewable and
+// can be resumed (claude --resume <uuid>). No BR, worktree or live tmux required.
+const REPO_ID_RE = /^[A-Za-z0-9._-]+$/;
+
+// Single pass over a transcript → the metadata the list/tab needs. Parsing 40+ files
+// on every poll is wasteful, so callers cache this by (file, mtime).
+function repoSessionMeta(raw) {
+  let title = null, summary = null, aiTitle = null, turns = 0, startedAt = null, lastAt = null, cwd = null, gitBranch = null;
+  for (const line of raw.split(/\r?\n/)) {
+    const s = line.trim();
+    if (!s) continue;
+    let obj; try { obj = JSON.parse(s); } catch { continue; }
+    if (obj.timestamp) { if (!startedAt) startedAt = obj.timestamp; lastAt = obj.timestamp; }
+    if (!cwd && obj.cwd) cwd = obj.cwd;
+    if (!gitBranch && obj.gitBranch) gitBranch = obj.gitBranch;
+    if (obj.type === 'summary' && typeof obj.summary === 'string') summary = obj.summary;
+    // Claude writes an `ai-title` entry: a short generated NAME for the session
+    // (e.g. "Add session persistence…"). Prefer it as the row's label — it reads far
+    // better than the first prompt's words. It carries no `message`, so capture it
+    // before the message-only guard below.
+    if (obj.type === 'ai-title' && typeof obj.aiTitle === 'string') aiTitle = obj.aiTitle;
+    if (obj.isMeta || !obj.message) continue;
+    if (obj.type === 'user') {
+      if (Array.isArray(obj.message.content) && obj.message.content.every(b => b && b.type === 'tool_result')) continue;
+      const text = textFromContent(obj.message.content);
+      if (text) { turns++; if (!title) title = text.replace(/\s+/g, ' ').slice(0, 140); }
+    } else if (obj.type === 'assistant') {
+      if (textFromContent(obj.message.content)) turns++;
+    }
+  }
+  // Label preference: the generated session name → transcript summary → first prompt.
+  return { title: aiTitle || summary || title, turns, startedAt, lastAt, cwd, gitBranch };
+}
+
+const repoMetaCache = new Map(); // file → { mtimeMs, meta }
+
+// Every mirrored session for this repo: one row per transcript UUID, newest first.
+async function listRepoSessions() {
+  const dir = await conversationsDir();
+  let files;
+  try { files = await fs.readdir(dir); } catch { return []; }
+  const out = [];
+  for (const f of files) {
+    if (!f.endsWith('.jsonl')) continue;
+    const sep = f.indexOf('__');
+    if (sep <= 0) continue;
+    const prefix = f.slice(0, sep);
+    const id = f.slice(sep + 2, -('.jsonl'.length));
+    if (!REPO_ID_RE.test(id)) continue;
+    const full = path.join(dir, f);
+    let st; try { st = await fs.stat(full); } catch { continue; }
+    let cached = repoMetaCache.get(f);
+    if (!cached || cached.mtimeMs !== st.mtimeMs) {
+      const meta = repoSessionMeta(await fs.readFile(full, 'utf-8'));
+      cached = { mtimeMs: st.mtimeMs, meta };
+      repoMetaCache.set(f, cached);
+    }
+    out.push({ id, prefix, file: f, ...cached.meta, savedAt: new Date(st.mtimeMs).toISOString() });
+  }
+  // Newest activity first (lastAt when known, else the file's mtime).
+  out.sort((a, b) => (b.lastAt || b.savedAt).localeCompare(a.lastAt || a.savedAt));
+  return out;
+}
+
+app.get('/api/claude/repo-sessions', async (_req, res) => {
+  try { res.json({ sessions: await listRepoSessions() }); }
+  catch (err) { res.status(500).json({ error: err.message || String(err) }); }
+});
+
+// Locate a session's mirrored transcript by UUID (prefix-agnostic: <anything>__<id>.jsonl).
+async function repoSessionFile(id) {
+  const dir = await conversationsDir();
+  let files; try { files = await fs.readdir(dir); } catch { return null; }
+  const match = files.find(f => f.endsWith(`__${id}.jsonl`));
+  return match ? { dir, file: match } : null;
+}
+
+// The saved conversation for a repo session (prompt/answer turns only).
+app.get('/api/claude/repo-sessions/:id/conversation', async (req, res) => {
+  try {
+    const id = String(req.params.id || '');
+    if (!REPO_ID_RE.test(id)) return res.status(400).json({ error: `invalid session id: ${id}` });
+    const hit = await repoSessionFile(id);
+    if (!hit) return res.status(404).json({ error: 'no saved transcript for this session' });
+    const raw = await fs.readFile(path.join(hit.dir, hit.file), 'utf-8');
+    res.json({ id, file: hit.file, messages: parseTranscript(raw) });
+  } catch (err) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// Resume a saved repo session in a fresh tmux window: `claude --resume <uuid>` in the
+// main repo tree. Claude replays from its own per-project store; if that was pruned we
+// first restore this session's file into it from our mirror, so the resume still works.
+// The tmux name is `claude-resume-<uuid>` (kept out of the per-BR list); the client
+// attaches to it via the Terminal page.
+app.post('/api/claude/repo-sessions/:id/resume', async (req, res) => {
+  try {
+    const id = String(req.params.id || '');
+    if (!REPO_ID_RE.test(id)) return res.status(400).json({ error: `invalid session id: ${id}` });
+    if (!(await claudeAvailable())) {
+      return res.status(400).json({ error: 'the `claude` CLI was not found on PATH inside WSL — install it or check your login shell' });
+    }
+    const hit = await repoSessionFile(id);
+    if (!hit) return res.status(404).json({ error: 'no saved transcript for this session' });
+
+    const session = `claude-resume-${id}`;
+    if (!SESSION_RE.test(session)) return res.status(400).json({ error: `invalid session name: ${session}` });
+    if (await tmuxHasSession(session)) return res.json({ session, mode: 'already-running' });
+
+    const root = await mainRepoRoot();
+    // Restore the transcript into Claude's own project store if it isn't there, so
+    // `--resume` has something to replay. The store keys off the working dir, so this
+    // mirrors the file the (Windows) claude process will look for.
+    const nativeDir = path.join(os.homedir(), '.claude', 'projects', claudeProjectSlug(root));
+    const nativeFile = path.join(nativeDir, `${id}.jsonl`);
+    try { await fs.access(nativeFile); }
+    catch {
+      await fs.mkdir(nativeDir, { recursive: true });
+      await fs.copyFile(path.join(hit.dir, hit.file), nativeFile);
+    }
+
+    const repoWsl = toWslPath(root);
+    await wsl(['tmux', 'new-session', '-d', '-s', session, '-c', repoWsl,
+      'bash', '-lc', 'exec claude --resume "$1"', 'claude-resume', id]);
+    res.status(201).json({ session, mode: 'resumed' });
+  } catch (err) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
 // ── Git: history + worktrees ──────────────────────────────────────────────────
-// Read-only views over the repo's OWN git, for the in-app Git page. Everything
-// runs through the same WSL git used for Claude worktrees, so the worktree paths
-// shown here line up with the sessions page. Field separator \x1f (unit sep) can't
-// occur in commit metadata, so parsing stays trivial.
+// Read-only views over the repo's OWN git for the in-app Git page, plus the
+// mutating actions below (drop a commit, remove a worktree, merge one branch into
+// another). These run through WINDOWS git (git.exe), not WSL git: the repo's
+// worktrees were created by Windows git and store Windows paths, so WSL git lists
+// every one of them as "prunable" (its gitdir pointer is a C:\ path WSL can't
+// resolve) and can't operate on them. Windows git sees them correctly. Field
+// separator \x1f (unit sep) can't occur in commit metadata, so parsing stays trivial.
 const GIT_LOG_FMT = ['%H', '%h', '%an', '%ae', '%at', '%D', '%s'].join('%x1f');
+const REF_RE = /^[A-Za-z0-9._/-]+$/;      // branch name or ref, no room for extra args
+const SHA_RE = /^[0-9a-fA-F]{4,40}$/;     // abbreviated or full commit sha
+
+// Run Windows git (no shell). Longer timeout than wsl(): a rebase/merge can take
+// a moment. Resolves with { stdout, stderr }; rejects with those attached on failure.
+function gitWin(args, opts = {}) {
+  return execFileP('git', args, { timeout: 60000, windowsHide: true, ...opts });
+}
+
+// Parse `git worktree list --porcelain` into structured entries. git lists the
+// primary tree first, so entry 0 is flagged as `main`.
+function parseWorktrees(stdout) {
+  const worktrees = [];
+  let cur = null;
+  for (const line of stdout.split(/\r?\n/)) {
+    if (line.startsWith('worktree ')) {
+      cur = { path: line.slice('worktree '.length), head: null, branch: null,
+              detached: false, bare: false, locked: false };
+      worktrees.push(cur);
+    } else if (!cur) {
+      continue;
+    } else if (line.startsWith('HEAD ')) {
+      cur.head = line.slice('HEAD '.length);
+    } else if (line.startsWith('branch ')) {
+      cur.branch = line.slice('branch '.length).replace(/^refs\/heads\//, '');
+    } else if (line === 'detached') {
+      cur.detached = true;
+    } else if (line === 'bare') {
+      cur.bare = true;
+    } else if (line === 'locked' || line.startsWith('locked ')) {
+      cur.locked = true;
+    }
+  }
+  if (worktrees[0]) worktrees[0].main = true;
+  return worktrees;
+}
+
+async function listWorktreesWin() {
+  const root = await mainRepoRoot();
+  const { stdout } = await gitWin(['-C', root, 'worktree', 'list', '--porcelain']);
+  return parseWorktrees(stdout);
+}
+
+// The main and test worktrees (and their branches) are off-limits to destructive
+// actions — see the FIXED RULE in CLAUDE.md. Guard on the main flag AND the branch
+// name AND the path's own basename, so no single mislabel can slip a protected tree
+// through.
+function isProtectedWorktree(wt) {
+  const base = String(wt.path || '').replace(/[\\/]+$/, '').split(/[\\/]/).pop();
+  return !!wt.main || wt.branch === 'main' || wt.branch === 'test' || base === 'test';
+}
+function isProtectedBranch(branch) {
+  return branch === 'main' || branch === 'test';
+}
+
+// A worktree's path as git listed it, resolved to an absolute Windows path so it
+// can be handed back to `git -C`. Absolute C:/… paths pass through unchanged; the
+// rare relative form (a broken worktree) resolves against the repo root.
+function resolveWtPath(p, root) {
+  return path.isAbsolute(p) || /^[A-Za-z]:/.test(p) ? p : path.resolve(root, p);
+}
+
+// Is commit `sha` already contained in `ref` (i.e. merged into it)? `merge-base
+// --is-ancestor` signals the answer through its exit code — 0 = yes, 1 = no,
+// anything else (e.g. 128 when `ref` doesn't exist) is an error. execFile rejects
+// on any non-zero exit, so we treat every rejection as "not merged".
+async function gitIsAncestor(root, sha, ref) {
+  if (!sha || !ref) return false;
+  try {
+    await gitWin(['-C', root, 'merge-base', '--is-ancestor', sha, ref]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Does a ref resolve? `rev-parse --verify --quiet` exits non-zero (rejects) when it
+// doesn't, letting us skip ancestry probes for branches that aren't present.
+async function gitRefExists(root, ref) {
+  try {
+    await gitWin(['-C', root, 'rev-parse', '--verify', '--quiet', ref]);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 app.get('/api/git/worktrees', async (_req, res) => {
   try {
-    const repoWsl = toWslPath(__dirname);
-    const { stdout } = await wsl(['git', '-C', repoWsl, 'worktree', 'list', '--porcelain']);
-    const worktrees = [];
-    let cur = null;
-    for (const line of stdout.split(/\r?\n/)) {
-      if (line.startsWith('worktree ')) {
-        cur = { path: line.slice('worktree '.length), head: null, branch: null,
-                detached: false, bare: false, locked: false };
-        worktrees.push(cur);
-      } else if (!cur) {
-        continue;
-      } else if (line.startsWith('HEAD ')) {
-        cur.head = line.slice('HEAD '.length);
-      } else if (line.startsWith('branch ')) {
-        cur.branch = line.slice('branch '.length).replace(/^refs\/heads\//, '');
-      } else if (line === 'detached') {
-        cur.detached = true;
-      } else if (line === 'bare') {
-        cur.bare = true;
-      } else if (line === 'locked' || line.startsWith('locked ')) {
-        cur.locked = true;
+    const root = await mainRepoRoot();
+    const worktrees = await listWorktreesWin();
+
+    // Enrich each worktree with lifecycle state so the Git page can colour-code the
+    // cards: merged into `main` (red), merged into `test` (yellow), or untouched for
+    // a while (violet, decided client-side from lastCommitMs). The primary tree and
+    // the main/test branches themselves are never flagged as merged — they are the
+    // destinations, not candidates for cleanup. All git calls go through Windows git
+    // (gitWin) so WSL never marks the repo's worktrees prunable.
+    const [hasMain, hasTest] = await Promise.all([
+      gitRefExists(root, 'refs/heads/main'),
+      gitRefExists(root, 'refs/heads/test'),
+    ]);
+    await Promise.all(worktrees.map(async (wt) => {
+      if (wt.head) {
+        try {
+          const { stdout: ct } = await gitWin(['-C', root, 'log', '-1', '--format=%ct', wt.head]);
+          const secs = Number(ct.trim());
+          if (Number.isFinite(secs)) wt.lastCommitMs = secs * 1000;
+        } catch { /* leave lastCommitMs undefined */ }
       }
-    }
-    if (worktrees[0]) worktrees[0].main = true; // git lists the primary tree first
+      const isDestination = wt.main || wt.branch === 'main' || wt.branch === 'test';
+      if (!isDestination && wt.head) {
+        const [mergedToMain, mergedToTest] = await Promise.all([
+          hasMain ? gitIsAncestor(root, wt.head, 'refs/heads/main') : Promise.resolve(false),
+          hasTest ? gitIsAncestor(root, wt.head, 'refs/heads/test') : Promise.resolve(false),
+        ]);
+        wt.mergedToMain = mergedToMain;
+        wt.mergedToTest = mergedToTest;
+      }
+    }));
     res.json({ worktrees });
   } catch (err) {
     res.status(500).json({ error: (err.stderr || err.message || String(err)).trim() });
@@ -561,18 +807,18 @@ app.get('/api/git/worktrees', async (_req, res) => {
 
 app.get('/api/git/log', async (req, res) => {
   try {
-    const repoWsl = toWslPath(__dirname);
+    const root = await mainRepoRoot();
     const limit = clampInt(req.query.limit, 100, 1, 1000);
     // Optional ref (branch name or sha) to scope the log to one worktree's branch.
     // Constrain it to ref-safe characters so it can't smuggle extra git args.
     const ref = String(req.query.ref || '').trim();
-    if (ref && !/^[A-Za-z0-9._/-]+$/.test(ref)) {
+    if (ref && !REF_RE.test(ref)) {
       return res.status(400).json({ error: 'invalid ref' });
     }
-    const args = ['git', '-C', repoWsl, 'log', `--pretty=format:${GIT_LOG_FMT}`, '-n', String(limit)];
+    const args = ['-C', root, 'log', `--pretty=format:${GIT_LOG_FMT}`, '-n', String(limit)];
     if (ref) args.push(ref);
     args.push('--'); // terminate revisions: nothing after is treated as a pathspec
-    const { stdout } = await wsl(args);
+    const { stdout } = await gitWin(args);
     const commits = stdout.split(/\r?\n/).filter(Boolean).map((line) => {
       const [hash, short, author, email, at, refs, subject] = line.split('\x1f');
       return {
@@ -588,211 +834,142 @@ app.get('/api/git/log', async (req, res) => {
   }
 });
 
-// ── Database connections (Store A + target B…Z registry) ──────────────────────
-// Store A is the viewer's own MariaDB database; it holds the encrypted profiles
-// for the target application databases whose state we display. The selector in
-// the UI flips which target the browse endpoints read from. All handlers funnel
-// errors through a shared helper so a downed MariaDB surfaces as 503, a bad body
-// as 400, and everything else as 500.
+// ── Git: mutating actions (drop commit, remove worktree, merge branches) ───────
+// Each rewrites or removes real history, so they validate their inputs against
+// REF_RE/SHA_RE (no extra-argument injection), refuse to touch the protected
+// main/test worktrees, and roll back (rebase/merge --abort) on any failure so the
+// working tree is never left mid-operation.
+
+// Drop a single commit from a branch. The branch must be checked out in a worktree
+// (every feature branch here is): we rebase inside that worktree, replaying the
+// commits after <sha> onto <sha>'s parent, which removes exactly <sha>.
+app.post('/api/git/drop-commit', async (req, res) => {
+  try {
+    const branch = String(req.body?.branch || '').trim();
+    const sha = String(req.body?.sha || '').trim();
+    if (!REF_RE.test(branch)) return res.status(400).json({ error: 'invalid branch' });
+    if (!SHA_RE.test(sha)) return res.status(400).json({ error: 'invalid sha' });
+    if (isProtectedBranch(branch)) {
+      return res.status(403).json({ error: `refusing to rewrite history of the ${branch} branch` });
+    }
+    const root = await mainRepoRoot();
+    const wt = (await listWorktreesWin()).find(w => w.branch === branch);
+    if (!wt) return res.status(404).json({ error: `branch ${branch} is not checked out in any worktree` });
+    const wtPath = resolveWtPath(wt.path, root);
+
+    try {
+      // `rebase --onto <sha>^ <sha>` takes the range <sha>..HEAD and replays it onto
+      // <sha>'s parent, dropping <sha> itself. HEAD here is the worktree's branch.
+      await gitWin(['-C', wtPath, 'rebase', '--onto', `${sha}^`, sha]);
+    } catch (e) {
+      await gitWin(['-C', wtPath, 'rebase', '--abort']).catch(() => {});
+      const msg = (e.stderr || e.message || String(e)).trim();
+      return res.status(409).json({ error: `could not drop commit (rebase aborted): ${msg}` });
+    }
+    const { stdout } = await gitWin(['-C', wtPath, 'rev-parse', 'HEAD']);
+    res.json({ ok: true, branch, dropped: sha, head: stdout.trim() });
+  } catch (err) {
+    res.status(500).json({ error: (err.stderr || err.message || String(err)).trim() });
+  }
+});
+
+// Remove a worktree by its path (as listed by /api/git/worktrees). Never the main
+// or test worktree. Without force, git refuses when the tree has changes; the
+// client can re-request with force:true after confirming.
+app.post('/api/git/worktrees/remove', async (req, res) => {
+  try {
+    const target = String(req.body?.path || '').trim();
+    if (!target) return res.status(400).json({ error: 'path is required' });
+    const force = req.body?.force === true;
+    const root = await mainRepoRoot();
+    const wt = (await listWorktreesWin()).find(w => w.path === target);
+    if (!wt) return res.status(404).json({ error: 'no worktree at that path' });
+    if (isProtectedWorktree(wt)) {
+      return res.status(403).json({ error: 'refusing to remove the main or test worktree' });
+    }
+    const args = ['-C', root, 'worktree', 'remove'];
+    if (force) args.push('--force');
+    args.push(resolveWtPath(wt.path, root));
+    try {
+      await gitWin(args);
+    } catch (e) {
+      const msg = (e.stderr || e.message || String(e)).trim();
+      // Signal "needs force" distinctly so the client can offer a force retry.
+      const needsForce = /use\s+--force|contains modified|untracked|not empty|locked working tree/i.test(msg);
+      return res.status(needsForce ? 409 : 500).json({ error: msg, needsForce });
+    }
+    res.json({ ok: true, removed: wt.path, branch: wt.branch });
+  } catch (err) {
+    res.status(500).json({ error: (err.stderr || err.message || String(err)).trim() });
+  }
+});
+
+// Merge one branch into another. The target branch must be checked out in a
+// worktree; we merge inside it (--no-edit for a non-interactive commit message).
+// On conflict or any failure the merge is aborted, leaving the target untouched.
+app.post('/api/git/merge', async (req, res) => {
+  try {
+    const from = String(req.body?.from || '').trim();
+    const into = String(req.body?.into || '').trim();
+    if (!REF_RE.test(from)) return res.status(400).json({ error: 'invalid source branch' });
+    if (!REF_RE.test(into)) return res.status(400).json({ error: 'invalid target branch' });
+    if (from === into) return res.status(400).json({ error: 'source and target are the same branch' });
+    const root = await mainRepoRoot();
+    const worktrees = await listWorktreesWin();
+    const target = worktrees.find(w => w.branch === into);
+    if (!target) return res.status(404).json({ error: `target branch ${into} is not checked out in any worktree` });
+    if (!worktrees.some(w => w.branch === from)) {
+      // Not fatal if the branch exists but isn't checked out; verify it resolves.
+      try { await gitWin(['-C', root, 'rev-parse', '--verify', `refs/heads/${from}`]); }
+      catch { return res.status(404).json({ error: `source branch ${from} not found` }); }
+    }
+    const wtPath = resolveWtPath(target.path, root);
+    try {
+      const { stdout } = await gitWin(['-C', wtPath, 'merge', '--no-edit', from]);
+      const head = (await gitWin(['-C', wtPath, 'rev-parse', 'HEAD'])).stdout.trim();
+      res.json({ ok: true, from, into, head, output: stdout.trim() });
+    } catch (e) {
+      await gitWin(['-C', wtPath, 'merge', '--abort']).catch(() => {});
+      const msg = (e.stderr || e.stdout || e.message || String(e)).trim();
+      return res.status(409).json({ error: `merge aborted: ${msg}` });
+    }
+  } catch (err) {
+    res.status(500).json({ error: (err.stderr || err.message || String(err)).trim() });
+  }
+});
+
+// ── Applications + their state (single store DB) ──────────────────────────────
+// Everything lives in one MariaDB database. `applications` is the top-level
+// entity; epics/business-rules/notes/snapshots/agent-info are scoped by
+// application id. The selector in the UI flips which application the state
+// endpoints read/write. All handlers funnel errors through a shared helper so a
+// downed MariaDB surfaces as 503, a bad body as 400, and everything else as 500.
 function sendDbError(res, err) {
   res.status(err.status || 500).json({ error: err.message });
 }
 
 app.get('/api/db/status', (_req, res) => res.json(dbStore.status()));
 
-app.get('/api/db/connections', async (_req, res) => {
-  try { res.json(await dbStore.listConnections()); } catch (err) { sendDbError(res, err); }
+app.get('/api/applications', async (_req, res) => {
+  try { res.json({ applications: await dbStore.listApplications() }); } catch (err) { sendDbError(res, err); }
 });
 
-app.post('/api/db/connections', async (req, res) => {
-  try { res.status(201).json(await dbStore.createConnection(req.body || {})); } catch (err) { sendDbError(res, err); }
+app.post('/api/applications', async (req, res) => {
+  try { res.status(201).json(await dbStore.createApplication(req.body || {})); } catch (err) { sendDbError(res, err); }
 });
 
-// Test arbitrary (unsaved) parameters — lets the form verify before saving.
-app.post('/api/db/connections/test', async (req, res) => {
-  try { res.json(await dbStore.testParams(req.body || {})); } catch (err) { sendDbError(res, err); }
-});
-
-app.put('/api/db/connections/:id', async (req, res) => {
-  try {
-    const updated = await dbStore.updateConnection(req.params.id, req.body || {});
-    if (!updated) return res.status(404).json({ error: 'connection not found' });
-    res.json(updated);
-  } catch (err) { sendDbError(res, err); }
-});
-
-app.delete('/api/db/connections/:id', async (req, res) => {
-  try {
-    const ok = await dbStore.deleteConnection(req.params.id);
-    if (!ok) return res.status(404).json({ error: 'connection not found' });
-    res.json({ ok: true });
-  } catch (err) { sendDbError(res, err); }
-});
-
-app.post('/api/db/connections/:id/test', async (req, res) => {
-  try { res.json(await dbStore.testExisting(req.params.id)); } catch (err) { sendDbError(res, err); }
-});
-
-// Active selection — which target the app currently retrieves state from.
-app.get('/api/db/active', async (_req, res) => {
+// Active selection — which application the app currently shows state for.
+app.get('/api/applications/active', async (_req, res) => {
   try { res.json({ activeId: await dbStore.getActiveId() }); } catch (err) { sendDbError(res, err); }
 });
 
-app.put('/api/db/active', async (req, res) => {
+app.put('/api/applications/active', async (req, res) => {
   try { res.json({ activeId: await dbStore.setActiveId((req.body || {}).id ?? null) }); } catch (err) { sendDbError(res, err); }
 });
 
-// Browse the target: list its tables, then preview rows of one.
-app.get('/api/db/connections/:id/tables', async (req, res) => {
-  try { res.json({ tables: await dbStore.listTables(req.params.id) }); } catch (err) { sendDbError(res, err); }
-});
-
-app.get('/api/db/connections/:id/tables/:table/rows', async (req, res) => {
-  try { res.json(await dbStore.previewTable(req.params.id, req.params.table, req.query.limit)); } catch (err) { sendDbError(res, err); }
-});
-
-// ── Application data: Epics + Business Rules (in the target app's own DB) ──────
-// Every route is scoped to a connection id: the viewer flips the active
-// connection to switch which application's epics/BRs it reads and edits. The
-// tables are auto-provisioned in the target's DB on first touch.
-app.get('/api/db/connections/:id/epics', async (req, res) => {
-  try { res.json({ epics: await dbStore.listEpics(req.params.id) }); } catch (err) { sendDbError(res, err); }
-});
-
-app.post('/api/db/connections/:id/epics', async (req, res) => {
-  try { res.status(201).json(await dbStore.createEpic(req.params.id, req.body || {})); } catch (err) { sendDbError(res, err); }
-});
-
-app.put('/api/db/connections/:id/epics/:epicId', async (req, res) => {
-  try {
-    const updated = await dbStore.updateEpic(req.params.id, req.params.epicId, req.body || {});
-    if (!updated) return res.status(404).json({ error: 'epic not found' });
-    res.json(updated);
-  } catch (err) { sendDbError(res, err); }
-});
-
-app.delete('/api/db/connections/:id/epics/:epicId', async (req, res) => {
-  try {
-    const ok = await dbStore.deleteEpic(req.params.id, req.params.epicId);
-    if (!ok) return res.status(404).json({ error: 'epic not found' });
-    res.json({ ok: true });
-  } catch (err) { sendDbError(res, err); }
-});
-
-// Notes — free-form ideas kept against the active application, same connection
-// scoping as epics/business-rules.
-app.get('/api/db/connections/:id/notes', async (req, res) => {
-  try { res.json({ notes: await dbStore.listNotes(req.params.id) }); } catch (err) { sendDbError(res, err); }
-});
-
-app.post('/api/db/connections/:id/notes', async (req, res) => {
-  try { res.status(201).json(await dbStore.createNote(req.params.id, req.body || {})); } catch (err) { sendDbError(res, err); }
-});
-
-app.put('/api/db/connections/:id/notes/:noteId', async (req, res) => {
-  try {
-    const updated = await dbStore.updateNote(req.params.id, req.params.noteId, req.body || {});
-    if (!updated) return res.status(404).json({ error: 'note not found' });
-    res.json(updated);
-  } catch (err) { sendDbError(res, err); }
-});
-
-app.delete('/api/db/connections/:id/notes/:noteId', async (req, res) => {
-  try {
-    const ok = await dbStore.deleteNote(req.params.id, req.params.noteId);
-    if (!ok) return res.status(404).json({ error: 'note not found' });
-    res.json({ ok: true });
-  } catch (err) { sendDbError(res, err); }
-});
-
-app.get('/api/db/connections/:id/business-rules', async (req, res) => {
-  try { res.json({ rules: await dbStore.listBusinessRules(req.params.id) }); } catch (err) { sendDbError(res, err); }
-});
-
-app.post('/api/db/connections/:id/business-rules', async (req, res) => {
-  try { res.status(201).json(await dbStore.createBusinessRule(req.params.id, req.body || {})); } catch (err) { sendDbError(res, err); }
-});
-
-app.put('/api/db/connections/:id/business-rules/:brId', async (req, res) => {
-  try {
-    const updated = await dbStore.updateBusinessRule(req.params.id, req.params.brId, req.body || {});
-    if (!updated) return res.status(404).json({ error: 'business rule not found' });
-    res.json(updated);
-  } catch (err) { sendDbError(res, err); }
-});
-
-app.delete('/api/db/connections/:id/business-rules/:brId', async (req, res) => {
-  try {
-    const ok = await dbStore.deleteBusinessRule(req.params.id, req.params.brId);
-    if (!ok) return res.status(404).json({ error: 'business rule not found' });
-    res.json({ ok: true });
-  } catch (err) { sendDbError(res, err); }
-});
-
-// ── BR snapshots (point-in-time copies of the whole Epic + BR set) ────────────
-// A snapshot captures the current epics + business rules so they can be diffed
-// against the live set later. Scoped per connection like epics/business-rules.
-app.get('/api/db/connections/:id/br-snapshots', async (req, res) => {
-  try { res.json({ snapshots: await dbStore.listSnapshots(req.params.id) }); } catch (err) { sendDbError(res, err); }
-});
-
-app.post('/api/db/connections/:id/br-snapshots', async (req, res) => {
-  try { res.status(201).json(await dbStore.createSnapshot(req.params.id, req.body || {})); } catch (err) { sendDbError(res, err); }
-});
-
-app.get('/api/db/connections/:id/br-snapshots/:snapId', async (req, res) => {
-  try {
-    const snapshot = await dbStore.getSnapshot(req.params.id, req.params.snapId);
-    if (!snapshot) return res.status(404).json({ error: 'snapshot not found' });
-    res.json(snapshot);
-  } catch (err) { sendDbError(res, err); }
-});
-
-app.delete('/api/db/connections/:id/br-snapshots/:snapId', async (req, res) => {
-  try {
-    const ok = await dbStore.deleteSnapshot(req.params.id, req.params.snapId);
-    if (!ok) return res.status(404).json({ error: 'snapshot not found' });
-    res.json({ ok: true });
-  } catch (err) { sendDbError(res, err); }
-});
-
-// ── Additional agent information (extra agent-facing context per Business Rule) ─
-// `?uptoExecutionOrder=<n>` filters to entries whose referenced BR has been
-// reached by development (referenced BR execution_order <= n) — what the develop
-// agents load.
-app.get('/api/db/connections/:id/agent-info', async (req, res) => {
-  try {
-    const { uptoExecutionOrder } = req.query;
-    const info = uptoExecutionOrder != null
-      ? await dbStore.listAgentInfoUpToExecutionOrder(req.params.id, String(uptoExecutionOrder))
-      : await dbStore.listAgentInfo(req.params.id);
-    res.json({ info });
-  } catch (err) { sendDbError(res, err); }
-});
-
-app.post('/api/db/connections/:id/agent-info', async (req, res) => {
-  try { res.status(201).json(await dbStore.createAgentInfo(req.params.id, req.body || {})); } catch (err) { sendDbError(res, err); }
-});
-
-app.put('/api/db/connections/:id/agent-info/:infoId', async (req, res) => {
-  try {
-    const updated = await dbStore.updateAgentInfo(req.params.id, req.params.infoId, req.body || {});
-    if (!updated) return res.status(404).json({ error: 'agent information not found' });
-    res.json(updated);
-  } catch (err) { sendDbError(res, err); }
-});
-
-app.delete('/api/db/connections/:id/agent-info/:infoId', async (req, res) => {
-  try {
-    const ok = await dbStore.deleteAgentInfo(req.params.id, req.params.infoId);
-    if (!ok) return res.status(404).json({ error: 'agent information not found' });
-    res.json({ ok: true });
-  } catch (err) { sendDbError(res, err); }
-});
-
 // Convenience read for the develop agents: the applicable agent info for the
-// ACTIVE connection, filtered to development progress via ?uptoExecutionOrder=<n>.
-app.get('/api/db/active/agent-info', async (req, res) => {
+// ACTIVE application, filtered to development progress via ?uptoExecutionOrder=<n>.
+app.get('/api/applications/active/agent-info', async (req, res) => {
   try {
     const activeId = await dbStore.getActiveId();
     if (!activeId) return res.json({ info: [], activeId: null });
@@ -804,89 +981,171 @@ app.get('/api/db/active/agent-info', async (req, res) => {
   } catch (err) { sendDbError(res, err); }
 });
 
+app.put('/api/applications/:appId', async (req, res) => {
+  try {
+    const updated = await dbStore.updateApplication(req.params.appId, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'application not found' });
+    res.json(updated);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/applications/:appId', async (req, res) => {
+  try {
+    const ok = await dbStore.deleteApplication(req.params.appId);
+    if (!ok) return res.status(404).json({ error: 'application not found' });
+    res.json({ ok: true });
+  } catch (err) { sendDbError(res, err); }
+});
+
+// ── Application state: Epics + Business Rules + Notes + snapshots ──────────────
+// Every route is scoped to an application id: the viewer flips the active
+// application to switch which epics/BRs it reads and edits.
+app.get('/api/applications/:appId/epics', async (req, res) => {
+  try { res.json({ epics: await dbStore.listEpics(req.params.appId) }); } catch (err) { sendDbError(res, err); }
+});
+
+app.post('/api/applications/:appId/epics', async (req, res) => {
+  try { res.status(201).json(await dbStore.createEpic(req.params.appId, req.body || {})); } catch (err) { sendDbError(res, err); }
+});
+
+app.put('/api/applications/:appId/epics/:epicId', async (req, res) => {
+  try {
+    const updated = await dbStore.updateEpic(req.params.appId, req.params.epicId, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'epic not found' });
+    res.json(updated);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/applications/:appId/epics/:epicId', async (req, res) => {
+  try {
+    const ok = await dbStore.deleteEpic(req.params.appId, req.params.epicId);
+    if (!ok) return res.status(404).json({ error: 'epic not found' });
+    res.json({ ok: true });
+  } catch (err) { sendDbError(res, err); }
+});
+
+// Notes — free-form ideas kept against the active application, same application
+// scoping as epics/business-rules.
+app.get('/api/applications/:appId/notes', async (req, res) => {
+  try { res.json({ notes: await dbStore.listNotes(req.params.appId) }); } catch (err) { sendDbError(res, err); }
+});
+
+app.post('/api/applications/:appId/notes', async (req, res) => {
+  try { res.status(201).json(await dbStore.createNote(req.params.appId, req.body || {})); } catch (err) { sendDbError(res, err); }
+});
+
+app.put('/api/applications/:appId/notes/:noteId', async (req, res) => {
+  try {
+    const updated = await dbStore.updateNote(req.params.appId, req.params.noteId, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'note not found' });
+    res.json(updated);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/applications/:appId/notes/:noteId', async (req, res) => {
+  try {
+    const ok = await dbStore.deleteNote(req.params.appId, req.params.noteId);
+    if (!ok) return res.status(404).json({ error: 'note not found' });
+    res.json({ ok: true });
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.get('/api/applications/:appId/business-rules', async (req, res) => {
+  try { res.json({ rules: await dbStore.listBusinessRules(req.params.appId) }); } catch (err) { sendDbError(res, err); }
+});
+
+app.post('/api/applications/:appId/business-rules', async (req, res) => {
+  try { res.status(201).json(await dbStore.createBusinessRule(req.params.appId, req.body || {})); } catch (err) { sendDbError(res, err); }
+});
+
+app.put('/api/applications/:appId/business-rules/:brId', async (req, res) => {
+  try {
+    const updated = await dbStore.updateBusinessRule(req.params.appId, req.params.brId, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'business rule not found' });
+    res.json(updated);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/applications/:appId/business-rules/:brId', async (req, res) => {
+  try {
+    const ok = await dbStore.deleteBusinessRule(req.params.appId, req.params.brId);
+    if (!ok) return res.status(404).json({ error: 'business rule not found' });
+    res.json({ ok: true });
+  } catch (err) { sendDbError(res, err); }
+});
+
+// ── BR snapshots (point-in-time copies of the whole Epic + BR set) ────────────
+// A snapshot captures the current epics + business rules so they can be diffed
+// against the live set later. Scoped per application like epics/business-rules.
+app.get('/api/applications/:appId/br-snapshots', async (req, res) => {
+  try { res.json({ snapshots: await dbStore.listSnapshots(req.params.appId) }); } catch (err) { sendDbError(res, err); }
+});
+
+app.post('/api/applications/:appId/br-snapshots', async (req, res) => {
+  try { res.status(201).json(await dbStore.createSnapshot(req.params.appId, req.body || {})); } catch (err) { sendDbError(res, err); }
+});
+
+app.get('/api/applications/:appId/br-snapshots/:snapId', async (req, res) => {
+  try {
+    const snapshot = await dbStore.getSnapshot(req.params.appId, req.params.snapId);
+    if (!snapshot) return res.status(404).json({ error: 'snapshot not found' });
+    res.json(snapshot);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/applications/:appId/br-snapshots/:snapId', async (req, res) => {
+  try {
+    const ok = await dbStore.deleteSnapshot(req.params.appId, req.params.snapId);
+    if (!ok) return res.status(404).json({ error: 'snapshot not found' });
+    res.json({ ok: true });
+  } catch (err) { sendDbError(res, err); }
+});
+
+// ── Additional agent information (extra agent-facing context per Business Rule) ─
+// `?uptoExecutionOrder=<n>` filters to entries whose referenced BR has been
+// reached by development (referenced BR execution_order <= n) — what the develop
+// agents load.
+app.get('/api/applications/:appId/agent-info', async (req, res) => {
+  try {
+    const { uptoExecutionOrder } = req.query;
+    const info = uptoExecutionOrder != null
+      ? await dbStore.listAgentInfoUpToExecutionOrder(req.params.appId, String(uptoExecutionOrder))
+      : await dbStore.listAgentInfo(req.params.appId);
+    res.json({ info });
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.post('/api/applications/:appId/agent-info', async (req, res) => {
+  try { res.status(201).json(await dbStore.createAgentInfo(req.params.appId, req.body || {})); } catch (err) { sendDbError(res, err); }
+});
+
+app.put('/api/applications/:appId/agent-info/:infoId', async (req, res) => {
+  try {
+    const updated = await dbStore.updateAgentInfo(req.params.appId, req.params.infoId, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'agent information not found' });
+    res.json(updated);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/applications/:appId/agent-info/:infoId', async (req, res) => {
+  try {
+    const ok = await dbStore.deleteAgentInfo(req.params.appId, req.params.infoId);
+    if (!ok) return res.status(404).json({ error: 'agent information not found' });
+    res.json({ ok: true });
+  } catch (err) { sendDbError(res, err); }
+});
+
 // ── Technical specifications (per-BR implementation spec, in the target's DB) ──
 // A technical specification is the parent entity for how one Business Rule is
 // implemented: it owns `entries` (implementation instructions authored by a user
 // or an agent) and `artifacts` (the generated file changes that realise the
-// rule). Every read embeds both children. Routes are scoped to a connection id.
-app.get('/api/db/connections/:id/technical-specs', async (req, res) => {
-  try { res.json({ specs: await dbStore.listTechnicalSpecs(req.params.id) }); } catch (err) { sendDbError(res, err); }
-});
-
-app.post('/api/db/connections/:id/technical-specs', async (req, res) => {
-  try { res.status(201).json(await dbStore.createTechnicalSpec(req.params.id, req.body || {})); } catch (err) { sendDbError(res, err); }
-});
-
-app.put('/api/db/connections/:id/technical-specs/:specId', async (req, res) => {
-  try {
-    const updated = await dbStore.updateTechnicalSpec(req.params.id, req.params.specId, req.body || {});
-    if (!updated) return res.status(404).json({ error: 'technical specification not found' });
-    res.json(updated);
-  } catch (err) { sendDbError(res, err); }
-});
-
-app.delete('/api/db/connections/:id/technical-specs/:specId', async (req, res) => {
-  try {
-    const ok = await dbStore.deleteTechnicalSpec(req.params.id, req.params.specId);
-    if (!ok) return res.status(404).json({ error: 'technical specification not found' });
-    res.json({ ok: true });
-  } catch (err) { sendDbError(res, err); }
-});
-
-// Spec entries (implementation instructions)
-app.post('/api/db/connections/:id/technical-specs/:specId/entries', async (req, res) => {
-  try {
-    const created = await dbStore.createSpecEntry(req.params.id, req.params.specId, req.body || {});
-    if (!created) return res.status(404).json({ error: 'technical specification not found' });
-    res.status(201).json(created);
-  } catch (err) { sendDbError(res, err); }
-});
-
-app.put('/api/db/connections/:id/technical-specs/:specId/entries/:entryId', async (req, res) => {
-  try {
-    const updated = await dbStore.updateSpecEntry(req.params.id, req.params.specId, req.params.entryId, req.body || {});
-    if (!updated) return res.status(404).json({ error: 'spec entry not found' });
-    res.json(updated);
-  } catch (err) { sendDbError(res, err); }
-});
-
-app.delete('/api/db/connections/:id/technical-specs/:specId/entries/:entryId', async (req, res) => {
-  try {
-    const ok = await dbStore.deleteSpecEntry(req.params.id, req.params.specId, req.params.entryId);
-    if (!ok) return res.status(404).json({ error: 'spec entry not found' });
-    res.json({ ok: true });
-  } catch (err) { sendDbError(res, err); }
-});
-
-// Spec artifacts (the generated file changes)
-app.post('/api/db/connections/:id/technical-specs/:specId/artifacts', async (req, res) => {
-  try {
-    const created = await dbStore.createSpecArtifact(req.params.id, req.params.specId, req.body || {});
-    if (!created) return res.status(404).json({ error: 'technical specification not found' });
-    res.status(201).json(created);
-  } catch (err) { sendDbError(res, err); }
-});
-
-app.put('/api/db/connections/:id/technical-specs/:specId/artifacts/:artifactId', async (req, res) => {
-  try {
-    const updated = await dbStore.updateSpecArtifact(req.params.id, req.params.specId, req.params.artifactId, req.body || {});
-    if (!updated) return res.status(404).json({ error: 'spec artifact not found' });
-    res.json(updated);
-  } catch (err) { sendDbError(res, err); }
-});
-
-app.delete('/api/db/connections/:id/technical-specs/:specId/artifacts/:artifactId', async (req, res) => {
-  try {
-    const ok = await dbStore.deleteSpecArtifact(req.params.id, req.params.specId, req.params.artifactId);
-    if (!ok) return res.status(404).json({ error: 'spec artifact not found' });
-    res.json({ ok: true });
-  } catch (err) { sendDbError(res, err); }
-});
+// rule). Every read embeds both children. Routes are scoped to an application id.
 
 // Convenience read for the develop agents: technical specs for the ACTIVE
-// connection. Unlike agent-info (cumulative up to a seq), a spec is per-BR, so
+// application. Unlike agent-info (cumulative up to a seq), a spec is per-BR, so
 // this filters to a single BR by `?brName=` or `?brSeq=` when provided.
-app.get('/api/db/active/technical-specs', async (req, res) => {
+// Registered before the `:id` route so "active" is not captured as an id.
+app.get('/api/applications/active/technical-specs', async (req, res) => {
   try {
     const activeId = await dbStore.getActiveId();
     if (!activeId) return res.json({ specs: [], activeId: null });
@@ -898,6 +1157,79 @@ app.get('/api/db/active/technical-specs', async (req, res) => {
   } catch (err) { sendDbError(res, err); }
 });
 
+app.get('/api/applications/:id/technical-specs', async (req, res) => {
+  try { res.json({ specs: await dbStore.listTechnicalSpecs(req.params.id) }); } catch (err) { sendDbError(res, err); }
+});
+
+app.post('/api/applications/:id/technical-specs', async (req, res) => {
+  try { res.status(201).json(await dbStore.createTechnicalSpec(req.params.id, req.body || {})); } catch (err) { sendDbError(res, err); }
+});
+
+app.put('/api/applications/:id/technical-specs/:specId', async (req, res) => {
+  try {
+    const updated = await dbStore.updateTechnicalSpec(req.params.id, req.params.specId, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'technical specification not found' });
+    res.json(updated);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/applications/:id/technical-specs/:specId', async (req, res) => {
+  try {
+    const ok = await dbStore.deleteTechnicalSpec(req.params.id, req.params.specId);
+    if (!ok) return res.status(404).json({ error: 'technical specification not found' });
+    res.json({ ok: true });
+  } catch (err) { sendDbError(res, err); }
+});
+
+// Spec entries (implementation instructions)
+app.post('/api/applications/:id/technical-specs/:specId/entries', async (req, res) => {
+  try {
+    const created = await dbStore.createSpecEntry(req.params.id, req.params.specId, req.body || {});
+    if (!created) return res.status(404).json({ error: 'technical specification not found' });
+    res.status(201).json(created);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.put('/api/applications/:id/technical-specs/:specId/entries/:entryId', async (req, res) => {
+  try {
+    const updated = await dbStore.updateSpecEntry(req.params.id, req.params.specId, req.params.entryId, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'spec entry not found' });
+    res.json(updated);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/applications/:id/technical-specs/:specId/entries/:entryId', async (req, res) => {
+  try {
+    const ok = await dbStore.deleteSpecEntry(req.params.id, req.params.specId, req.params.entryId);
+    if (!ok) return res.status(404).json({ error: 'spec entry not found' });
+    res.json({ ok: true });
+  } catch (err) { sendDbError(res, err); }
+});
+
+// Spec artifacts (the generated file changes)
+app.post('/api/applications/:id/technical-specs/:specId/artifacts', async (req, res) => {
+  try {
+    const created = await dbStore.createSpecArtifact(req.params.id, req.params.specId, req.body || {});
+    if (!created) return res.status(404).json({ error: 'technical specification not found' });
+    res.status(201).json(created);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.put('/api/applications/:id/technical-specs/:specId/artifacts/:artifactId', async (req, res) => {
+  try {
+    const updated = await dbStore.updateSpecArtifact(req.params.id, req.params.specId, req.params.artifactId, req.body || {});
+    if (!updated) return res.status(404).json({ error: 'spec artifact not found' });
+    res.json(updated);
+  } catch (err) { sendDbError(res, err); }
+});
+
+app.delete('/api/applications/:id/technical-specs/:specId/artifacts/:artifactId', async (req, res) => {
+  try {
+    const ok = await dbStore.deleteSpecArtifact(req.params.id, req.params.specId, req.params.artifactId);
+    if (!ok) return res.status(404).json({ error: 'spec artifact not found' });
+    res.json({ ok: true });
+  } catch (err) { sendDbError(res, err); }
+});
 // ── Methodology files (agents + commands) ─────────────────────────────────────
 // Served straight from .claude/ on disk — the filesystem is the single source of
 // truth (exactly where Claude Code discovers them), so there is no DB copy to seed
@@ -947,6 +1279,22 @@ function broadcastActivity(msg) {
     if (ws.readyState === ws.OPEN) ws.send(frame);
   }
 }
+
+// Exact "a tmux session finished a Claude turn" signal, posted by the Stop hook
+// running *inside* that tmux session (it knows `tmux display-message -p '#S'`).
+// Unlike the ntfy feed — which names runs by directory and needs fuzzy matching —
+// this carries the picker's session name verbatim, so the client flags it directly.
+// Deliberately NOT pushed to activityBuffer: it's a badge signal, not an Activity
+// feed entry, and must not appear on the Activity page or be replayed as backlog.
+app.post('/api/session-finished', (req, res) => {
+  const session = String((req.body && req.body.session) || '').trim();
+  if (!session) return res.status(400).json({ error: 'session required' });
+  const frame = JSON.stringify({ type: 'session-finished', session });
+  for (const ws of activityClients) {
+    if (ws.readyState === ws.OPEN) ws.send(frame);
+  }
+  res.json({ ok: true });
+});
 
 function scheduleNtfyReconnect() {
   if (ntfyReconnectTimer) return; // already pending — don't stack reconnects
@@ -1038,7 +1386,7 @@ activityWss.on('connection', (ws) => {
 // WebSocket ⇄ PTY bridge. Protocol:
 //   server → client : terminal output as BINARY frames; control as TEXT JSON.
 //   client → server : keystrokes as BINARY frames; {type:'resize',cols,rows} as TEXT JSON.
-wss.on('connection', (ws, req) => {
+wss.on('connection', async (ws, req) => {
   const url = new URL(req.url, 'http://localhost');
   const session = url.searchParams.get('session') || DEFAULT_TMUX_SESSION;
   let cols = clampInt(url.searchParams.get('cols'), 80, 20, 500);
@@ -1054,13 +1402,20 @@ wss.on('connection', (ws, req) => {
     return;
   }
 
+  // Start freshly-created sessions in the MAIN repo working tree, not wherever the
+  // server happens to run from (a linked worktree such as .claude/worktrees/test).
+  // For an existing session `-A` just attaches and this start-directory is ignored.
+  const startDir = toWslPath(await mainRepoRoot());
+  if (ws.readyState !== ws.OPEN) return; // client gave up while we resolved the root
+
   let term;
   try {
     // `new-session -A` attaches to <session> if it exists, or creates it — so the
     // panel degrades gracefully instead of erroring when the session isn't up yet.
     term = pty.spawn(
       'wsl.exe',
-      ['-d', WSL_DISTRO, '--', 'tmux', 'new-session', '-A', '-s', session, '-x', String(cols), '-y', String(rows)],
+      ['-d', WSL_DISTRO, '--', 'tmux', 'new-session', '-A', '-s', session,
+       '-x', String(cols), '-y', String(rows), '-c', startDir],
       // ConPTY (the node-pty default on Windows) is required here: it forwards
       // window-size changes through wsl.exe to the Linux PTY, so resizing the
       // panel actually reflows tmux. The winpty backend stays quiet in headless

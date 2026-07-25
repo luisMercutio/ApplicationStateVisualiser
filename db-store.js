@@ -1,18 +1,18 @@
-// ── Database A: the visualiser's own MariaDB control store ────────────────────
-// This module owns everything database-related for the app:
-//   • Store A  — a MariaDB database owned by the viewer that holds the saved
-//                connection profiles for the target application databases.
-//   • B…Z      — the registered target databases whose data we retrieve to
-//                display "different states of different applications".
+// ── The visualiser's single MariaDB store ─────────────────────────────────────
+// This module owns everything database-related for the app. Everything lives in
+// ONE database (Store A, `app_state_visualiser` by default):
+//   • applications  — the registered applications whose "state" we visualise.
+//   • epics / business_rules / notes / br_additional_agent_information /
+//     br_snapshots — the state of each application, every row scoped by
+//     application_id.
+//   • app_settings  — small key/value store (e.g. the active application).
 //
-// Credentials for B…Z are encrypted at rest (AES-256-GCM) and never handed
-// back to the client. The plaintext only exists in memory when we open a pool
-// to a target. Store A itself is reached with env-configured credentials so no
-// secret is ever committed to the repo.
+// There are no per-application databases and no external connection registry:
+// selecting an application simply filters the single store. Store A itself is
+// reached with env-configured credentials so no secret is ever committed.
+// (Methodology files live on disk and are served by methodology-store.js.)
 const mysql = require('mysql2/promise');
 const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
 
 function clampInt(value, fallback, min, max) {
   const n = parseInt(value, 10);
@@ -20,51 +20,7 @@ function clampInt(value, fallback, min, max) {
   return Math.max(min, Math.min(max, n));
 }
 
-// ── Encryption key ────────────────────────────────────────────────────────────
-// Prefer an operator-supplied key (ASV_SECRET_KEY, 32 bytes as hex or base64).
-// Otherwise generate one once and persist it to a gitignored keyfile so stored
-// credentials survive restarts. Losing the key means the stored passwords can
-// no longer be decrypted — treat .db-secret.key like any other secret.
-const KEY_FILE = path.resolve(__dirname, '.db-secret.key');
-
-function loadOrCreateKey() {
-  const env = process.env.ASV_SECRET_KEY;
-  if (env) {
-    const buf = Buffer.from(env, /^[0-9a-fA-F]{64}$/.test(env) ? 'hex' : 'base64');
-    if (buf.length !== 32) throw new Error('ASV_SECRET_KEY must decode to exactly 32 bytes');
-    return buf;
-  }
-  try {
-    const saved = fs.readFileSync(KEY_FILE);
-    if (saved.length === 32) return saved;
-  } catch { /* no keyfile yet */ }
-  const key = crypto.randomBytes(32);
-  fs.writeFileSync(KEY_FILE, key, { mode: 0o600 });
-  return key;
-}
-
-const KEY = loadOrCreateKey();
-
-// Serialised form: ivB64:tagB64:cipherB64. Empty string stays empty so a
-// "no password" profile round-trips cleanly.
-function encrypt(plain) {
-  if (plain == null || plain === '') return '';
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', KEY, iv);
-  const enc = Buffer.concat([cipher.update(String(plain), 'utf8'), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return `${iv.toString('base64')}:${tag.toString('base64')}:${enc.toString('base64')}`;
-}
-
-function decrypt(blob) {
-  if (!blob) return '';
-  const [ivB, tagB, dataB] = String(blob).split(':');
-  const decipher = crypto.createDecipheriv('aes-256-gcm', KEY, Buffer.from(ivB, 'base64'));
-  decipher.setAuthTag(Buffer.from(tagB, 'base64'));
-  return Buffer.concat([decipher.update(Buffer.from(dataB, 'base64')), decipher.final()]).toString('utf8');
-}
-
-// ── Store A connection settings (env-configured, never persisted) ─────────────
+// ── Store connection settings (env-configured, never persisted) ───────────────
 const STORE = {
   host: process.env.ASV_STORE_HOST || '127.0.0.1',
   port: clampInt(process.env.ASV_STORE_PORT, 3306, 1, 65535),
@@ -73,7 +29,7 @@ const STORE = {
   database: process.env.ASV_STORE_DB || 'app_state_visualiser',
 };
 
-// A Store-A identifier is only ever an internal name we control, but quote-escape
+// A store identifier is only ever an internal name we control, but quote-escape
 // defensively before interpolating it into DDL (identifiers can't be bound).
 function backtick(id) {
   return '`' + String(id).replace(/`/g, '``') + '`';
@@ -85,7 +41,7 @@ let initError = null;
 
 async function init() {
   try {
-    // Connect without a database first so we can create Store A on a fresh box.
+    // Connect without a database first so we can create the store on a fresh box.
     const admin = await mysql.createConnection({
       host: STORE.host, port: STORE.port, user: STORE.user, password: STORE.password,
       connectTimeout: 8000,
@@ -98,19 +54,15 @@ async function init() {
       database: STORE.database, waitForConnections: true, connectionLimit: 5, connectTimeout: 8000,
     });
 
+    // applications — the top-level entity. Everything else references it.
     await storePool.query(`
-      CREATE TABLE IF NOT EXISTS db_connections (
-        id            VARCHAR(36)  NOT NULL PRIMARY KEY,
-        name          VARCHAR(190) NOT NULL UNIQUE,
-        engine        VARCHAR(32)  NOT NULL DEFAULT 'mariadb',
-        host          VARCHAR(255) NOT NULL,
-        port          INT          NOT NULL DEFAULT 3306,
-        database_name VARCHAR(190) NOT NULL,
-        username      VARCHAR(190) NOT NULL,
-        password_enc  TEXT,
-        use_ssl       TINYINT(1)   NOT NULL DEFAULT 0,
-        created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      CREATE TABLE IF NOT EXISTS applications (
+        id          VARCHAR(36)   NOT NULL PRIMARY KEY,
+        name        VARCHAR(190)  NOT NULL UNIQUE,
+        description TEXT,
+        root_dir    VARCHAR(1024),
+        created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
     await storePool.query(`
@@ -118,6 +70,8 @@ async function init() {
         k VARCHAR(64) NOT NULL PRIMARY KEY,
         v TEXT
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
+
+    await ensureAppDataSchema();
 
     ready = true;
     initError = null;
@@ -128,280 +82,33 @@ async function init() {
   }
 }
 
-function status() {
-  return { ready, error: initError, store: { host: STORE.host, port: STORE.port, database: STORE.database } };
-}
-
-function ensureReady() {
-  if (!ready) {
-    const e = new Error(initError ? `Store A unavailable: ${initError}` : 'Store A not initialised');
-    e.status = 503;
-    throw e;
-  }
-}
-
-// ── Profile shape ─────────────────────────────────────────────────────────────
-// The DTO intentionally omits password material; the client only learns whether
-// a password is on file (hasPassword) so the edit form can leave it blank.
-function rowToDto(r) {
-  return {
-    id: r.id,
-    name: r.name,
-    engine: r.engine,
-    host: r.host,
-    port: r.port,
-    database: r.database_name,
-    username: r.username,
-    useSsl: !!r.use_ssl,
-    hasPassword: !!r.password_enc,
-    createdAt: r.created_at,
-    updatedAt: r.updated_at,
-  };
-}
-
-function normalise(input) {
-  const name = String(input?.name ?? '').trim();
-  const host = String(input?.host ?? '').trim();
-  const database = String(input?.database ?? '').trim();
-  const username = String(input?.username ?? '').trim();
-  if (!name) throw badRequest('name is required');
-  if (!host) throw badRequest('host is required');
-  if (!database) throw badRequest('database is required');
-  if (!username) throw badRequest('username is required');
-  return {
-    name, host, database, username,
-    port: clampInt(input?.port, 3306, 1, 65535),
-    engine: 'mariadb',
-    useSsl: !!input?.useSsl,
-    password: input?.password == null ? '' : String(input.password),
-  };
-}
-
-function badRequest(msg) {
-  const e = new Error(msg);
-  e.status = 400;
-  return e;
-}
-
-async function listConnections() {
-  ensureReady();
-  const [rows] = await storePool.query('SELECT * FROM db_connections ORDER BY name');
-  return rows.map(rowToDto);
-}
-
-async function getRow(id) {
-  const [rows] = await storePool.query('SELECT * FROM db_connections WHERE id = ?', [id]);
-  return rows[0] || null;
-}
-
-async function getConnection(id) {
-  ensureReady();
-  const row = await getRow(id);
-  return row ? rowToDto(row) : null;
-}
-
-async function createConnection(input) {
-  ensureReady();
-  const c = normalise(input);
-  const id = crypto.randomUUID();
-  try {
-    await storePool.query(
-      `INSERT INTO db_connections (id, name, engine, host, port, database_name, username, password_enc, use_ssl)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [id, c.name, c.engine, c.host, c.port, c.database, c.username, encrypt(c.password), c.useSsl ? 1 : 0],
-    );
-  } catch (err) {
-    if (err.code === 'ER_DUP_ENTRY') throw badRequest(`A connection named "${c.name}" already exists`);
-    throw err;
-  }
-  return getConnection(id);
-}
-
-async function updateConnection(id, input) {
-  ensureReady();
-  const existing = await getRow(id);
-  if (!existing) return null;
-  const c = normalise(input);
-  // Blank password on an existing profile means "leave the stored one alone";
-  // a non-empty value replaces it. There's no way to blank a password via the
-  // API on purpose, which is the safer default for a credentials store.
-  const passwordEnc = c.password === '' ? existing.password_enc : encrypt(c.password);
-  try {
-    await storePool.query(
-      `UPDATE db_connections
-         SET name = ?, engine = ?, host = ?, port = ?, database_name = ?, username = ?, password_enc = ?, use_ssl = ?
-       WHERE id = ?`,
-      [c.name, c.engine, c.host, c.port, c.database, c.username, passwordEnc, c.useSsl ? 1 : 0, id],
-    );
-  } catch (err) {
-    if (err.code === 'ER_DUP_ENTRY') throw badRequest(`A connection named "${c.name}" already exists`);
-    throw err;
-  }
-  await invalidatePool(id);
-  return getConnection(id);
-}
-
-async function deleteConnection(id) {
-  ensureReady();
-  const [res] = await storePool.query('DELETE FROM db_connections WHERE id = ?', [id]);
-  await invalidatePool(id);
-  const active = await getActiveId();
-  if (active === id) await setActiveId(null);
-  return res.affectedRows > 0;
-}
-
-// ── Active selection (which target the app currently retrieves from) ──────────
-const ACTIVE_KEY = 'active_connection_id';
-
-async function getActiveId() {
-  ensureReady();
-  const [rows] = await storePool.query('SELECT v FROM app_settings WHERE k = ?', [ACTIVE_KEY]);
-  return rows.length ? rows[0].v : null;
-}
-
-async function setActiveId(id) {
-  ensureReady();
-  if (id) {
-    const row = await getRow(id);
-    if (!row) throw badRequest('connection not found');
-  }
-  await storePool.query(
-    'INSERT INTO app_settings (k, v) VALUES (?, ?) ON DUPLICATE KEY UPDATE v = VALUES(v)',
-    [ACTIVE_KEY, id ?? null],
-  );
-  return id ?? null;
-}
-
-// ── Target (B…Z) pools ────────────────────────────────────────────────────────
-const targetPools = new Map(); // id -> mysql pool
-
-function poolConfigFromRow(row) {
-  return {
-    host: row.host,
-    port: row.port,
-    user: row.username,
-    password: decrypt(row.password_enc),
-    database: row.database_name,
-    ssl: row.use_ssl ? { rejectUnauthorized: false } : undefined,
-    waitForConnections: true,
-    connectionLimit: 3,
-    connectTimeout: 8000,
-  };
-}
-
-async function targetPool(id) {
-  if (targetPools.has(id)) return targetPools.get(id);
-  const row = await getRow(id);
-  if (!row) throw badRequest('connection not found');
-  const pool = mysql.createPool(poolConfigFromRow(row));
-  targetPools.set(id, pool);
-  return pool;
-}
-
-async function invalidatePool(id) {
-  appSchemaReady.delete(id);
-  const pool = targetPools.get(id);
-  if (pool) {
-    targetPools.delete(id);
-    try { await pool.end(); } catch { /* already closing */ }
-  }
-}
-
-// ── Connectivity test ─────────────────────────────────────────────────────────
-async function testParams(input) {
-  const c = normalise(input);
-  let conn;
-  try {
-    conn = await mysql.createConnection({
-      host: c.host, port: c.port, user: c.username, password: c.password,
-      database: c.database, ssl: c.useSsl ? { rejectUnauthorized: false } : undefined,
-      connectTimeout: 8000,
-    });
-    const [rows] = await conn.query('SELECT VERSION() AS version');
-    return { ok: true, version: rows[0].version };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  } finally {
-    if (conn) { try { await conn.end(); } catch { /* ignore */ } }
-  }
-}
-
-async function testExisting(id) {
-  ensureReady();
-  const row = await getRow(id);
-  if (!row) throw badRequest('connection not found');
-  return testParams({
-    name: row.name, host: row.host, port: row.port, database: row.database_name,
-    username: row.username, password: decrypt(row.password_enc), useSsl: !!row.use_ssl,
-  });
-}
-
-// ── State retrieval / browse ──────────────────────────────────────────────────
-async function listTables(id) {
-  ensureReady();
-  const pool = await targetPool(id);
-  const [rows] = await pool.query(
-    `SELECT table_name AS name, table_rows AS approxRows
-       FROM information_schema.tables
-      WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE'
-      ORDER BY table_name`);
-  return rows.map(r => ({ name: r.name, approxRows: Number(r.approxRows ?? 0) }));
-}
-
-// Cells can be Buffers, Dates, or JSON objects. Flatten them to display-safe
-// primitives so the preview serialises predictably and never dumps raw binary.
-function cellForDisplay(v) {
-  if (v == null) return null;
-  if (Buffer.isBuffer(v)) return `0x${v.toString('hex').slice(0, 64)}`;
-  if (v instanceof Date) return v.toISOString();
-  if (typeof v === 'object') return JSON.stringify(v);
-  return v;
-}
-
-async function previewTable(id, table, limit) {
-  ensureReady();
-  // Whitelist the table name against the live catalogue — the only safe way to
-  // put an identifier into a query, since identifiers can't be parameter-bound.
-  const tables = await listTables(id);
-  if (!tables.some(t => t.name === table)) throw badRequest(`unknown table: ${table}`);
-  const lim = clampInt(limit, 50, 1, 500);
-  const pool = await targetPool(id);
-  const [rows, fields] = await pool.query(`SELECT * FROM ${backtick(table)} LIMIT ${lim}`);
-  const columns = fields.map(f => f.name);
-  const shaped = rows.map(row => {
-    const out = {};
-    for (const col of columns) out[col] = cellForDisplay(row[col]);
-    return out;
-  });
-  return { table, columns, rows: shaped, limit: lim };
-}
-
-// ── Application data: Epics + Business Rules (in each target's own DB) ─────────
-// Design decision: each registered application's OWN database holds that
-// application's `epics` and `business_rules`. The viewer switches applications by
-// switching the active connection; these endpoints are always scoped to a
-// connection id and operate on that target's pool. Array/object BR fields are
-// stored as JSON text and (de)serialised in this module so the shape survives a
-// round-trip on both MariaDB (JSON == LONGTEXT) and MySQL.
-const appSchemaReady = new Set(); // connection ids whose tables we've ensured
-
-async function ensureAppSchema(pool) {
+// The per-application "state" tables. Every row carries an application_id and is
+// removed with its application (ON DELETE CASCADE). epic_key / BR name are unique
+// *per application*, so two applications can each own an "EPIC-001" or a "BR-001".
+// A Business Rule's identity is its `creation_index` (UUID) and its position is a
+// global integer `execution_order`. Array/object BR fields are stored as JSON text
+// and (de)serialised in this module so the shape survives a round-trip on MariaDB.
+async function ensureAppDataSchema() {
   // epics first — business_rules.epic_id references it.
-  await pool.query(`
+  await storePool.query(`
     CREATE TABLE IF NOT EXISTS epics (
-      id          VARCHAR(36)  NOT NULL PRIMARY KEY,
-      epic_key    VARCHAR(64),
-      title       VARCHAR(255) NOT NULL,
-      description TEXT,
-      seq         VARCHAR(64),
-      created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      UNIQUE KEY uq_epic_key (epic_key)
+      id             VARCHAR(36)  NOT NULL PRIMARY KEY,
+      application_id VARCHAR(36)  NOT NULL,
+      epic_key       VARCHAR(64),
+      title          VARCHAR(255) NOT NULL,
+      description    TEXT,
+      seq            VARCHAR(64),
+      created_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_epic_app_key (application_id, epic_key),
+      KEY idx_epic_app (application_id),
+      CONSTRAINT fk_epic_app FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
-  await pool.query(`
+  await storePool.query(`
     CREATE TABLE IF NOT EXISTS business_rules (
       creation_index    VARCHAR(36)  NOT NULL PRIMARY KEY,
+      application_id    VARCHAR(36)  NOT NULL,
       name              VARCHAR(190) NOT NULL,
       epic_id           VARCHAR(36),
       execution_order   INT,
@@ -416,129 +123,78 @@ async function ensureAppSchema(pool) {
       needs_to_be_established TINYINT(1) NOT NULL DEFAULT 0,
       created_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      UNIQUE KEY uq_br_name (name),
+      UNIQUE KEY uq_br_app_name (application_id, name),
       KEY idx_br_epic (epic_id),
+      KEY idx_br_app (application_id),
+      CONSTRAINT fk_br_app FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE,
       CONSTRAINT fk_br_epic FOREIGN KEY (epic_id) REFERENCES epics(id) ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
-
-  // Bring an existing business_rules table up to the current shape (id →
-  // creation_index rename, seq → execution_order) before anything references it.
-  await migrateBusinessRulesSchema(pool);
 
   // Extra, agent-facing context attached to a Business Rule. Each row references
   // one BR (by its creation_index) and carries a free-text description. During
   // development this is loaded into the developer agents once the BR under
   // development has reached (execution_order >=) the referenced BR — see
-  // listAgentInfoUpToExecutionOrder. Created after the migration so its FK can
-  // always reference business_rules(creation_index).
-  await pool.query(`
+  // listAgentInfoUpToExecutionOrder.
+  await storePool.query(`
     CREATE TABLE IF NOT EXISTS br_additional_agent_information (
       id               VARCHAR(36) NOT NULL PRIMARY KEY,
+      application_id   VARCHAR(36) NOT NULL,
       business_rule_id VARCHAR(36) NOT NULL,
       description      TEXT        NOT NULL,
       created_at       DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at       DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       KEY idx_agentinfo_br (business_rule_id),
+      KEY idx_agentinfo_app (application_id),
+      CONSTRAINT fk_agentinfo_app FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE,
       CONSTRAINT fk_agentinfo_br FOREIGN KEY (business_rule_id) REFERENCES business_rules(creation_index) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
-  // Free-form notes / ideas kept against the application. `related_brs` is an
+  // Free-form notes / ideas kept against an application. `related_brs` is an
   // OPTIONAL JSON array of BR references (free-form strings, not FKs), so a note
   // stays valid regardless of which BRs exist. Independent of epics/business_rules.
-  await pool.query(`
+  await storePool.query(`
     CREATE TABLE IF NOT EXISTS notes (
-      id          VARCHAR(36)  NOT NULL PRIMARY KEY,
-      title       VARCHAR(255) NOT NULL,
-      description LONGTEXT,
-      related_brs LONGTEXT,
-      created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      id             VARCHAR(36)  NOT NULL PRIMARY KEY,
+      application_id VARCHAR(36)  NOT NULL,
+      title          VARCHAR(255) NOT NULL,
+      description    LONGTEXT,
+      related_brs    LONGTEXT,
+      created_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      KEY idx_notes_app (application_id),
+      CONSTRAINT fk_notes_app FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
-  // Point-in-time snapshots of the whole Epic + Business Rule set. Each row is a
-  // self-contained copy (the epics/rules DTO arrays frozen as JSON) so it stays
-  // meaningful even after the live rules are reordered, edited or deleted — the
-  // basis for the "diff against current" view. Independent of the live tables
-  // (no FKs), so a snapshot survives deletion of the BRs it captured.
-  await pool.query(`
+  // Point-in-time snapshots of an application's whole Epic + Business Rule set.
+  // Each row is a self-contained copy (the epics/rules DTO arrays frozen as JSON)
+  // so it stays meaningful even after the live rules are reordered, edited or
+  // deleted — the basis for the "diff against current" view. No FKs to the live
+  // tables, so a snapshot survives deletion of the BRs it captured; it is still
+  // scoped to (and removed with) its application.
+  await storePool.query(`
     CREATE TABLE IF NOT EXISTS br_snapshots (
-      id          VARCHAR(36)  NOT NULL PRIMARY KEY,
-      label       VARCHAR(255) NOT NULL,
-      epics       LONGTEXT     NOT NULL,
-      rules       LONGTEXT     NOT NULL,
-      epic_count  INT          NOT NULL DEFAULT 0,
-      rule_count  INT          NOT NULL DEFAULT 0,
-      created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP
+      id             VARCHAR(36)  NOT NULL PRIMARY KEY,
+      application_id VARCHAR(36)  NOT NULL,
+      label          VARCHAR(255) NOT NULL,
+      epics          LONGTEXT     NOT NULL,
+      rules          LONGTEXT     NOT NULL,
+      epic_count     INT          NOT NULL DEFAULT 0,
+      rule_count     INT          NOT NULL DEFAULT 0,
+      created_at     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      KEY idx_snapshots_app (application_id),
+      CONSTRAINT fk_snapshots_app FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
-}
-
-// One-time, idempotent migration of an existing business_rules table to the
-// current shape: the UUID primary key `id` becomes `creation_index` (values are
-// preserved — still UUIDs), and the Dewey `seq` ordering string becomes an
-// integer `execution_order`. A freshly-created table already has the new columns,
-// so every branch below is a no-op there.
-async function migrateBusinessRulesSchema(pool) {
-  const hasColumn = async (table, col) => {
-    const [[{ n }]] = await pool.query(
-      `SELECT COUNT(*) AS n FROM information_schema.COLUMNS
-        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
-      [table, col]);
-    return n > 0;
-  };
-
-  // 1) id → creation_index. The agent-info FK references the old `id`, so drop it,
-  //    rename the column, then re-point the FK at creation_index.
-  if ((await hasColumn('business_rules', 'id')) && !(await hasColumn('business_rules', 'creation_index'))) {
-    const [fks] = await pool.query(
-      `SELECT CONSTRAINT_NAME AS name FROM information_schema.KEY_COLUMN_USAGE
-        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'br_additional_agent_information'
-          AND REFERENCED_TABLE_NAME = 'business_rules'`);
-    for (const fk of fks) {
-      await pool.query(`ALTER TABLE br_additional_agent_information DROP FOREIGN KEY ${backtick(fk.name)}`);
-    }
-    await pool.query('ALTER TABLE business_rules CHANGE COLUMN id creation_index VARCHAR(36) NOT NULL');
-    if (fks.length) {
-      await pool.query(
-        `ALTER TABLE br_additional_agent_information
-           ADD CONSTRAINT fk_agentinfo_br FOREIGN KEY (business_rule_id)
-           REFERENCES business_rules(creation_index) ON DELETE CASCADE`);
-    }
-  }
-
-  // 2) seq → execution_order. Add the integer column and backfill a global 1..N
-  //    order from the prior seq (numeric-aware; nulls last), then drop seq.
-  if (!(await hasColumn('business_rules', 'execution_order'))) {
-    await pool.query('ALTER TABLE business_rules ADD COLUMN execution_order INT AFTER epic_id');
-    const orderBy = (await hasColumn('business_rules', 'seq'))
-      ? 'seq IS NULL, CAST(seq AS DECIMAL(20,6)), name'
-      : 'name';
-    await pool.query(
-      `UPDATE business_rules b
-         JOIN (
-           SELECT creation_index, ROW_NUMBER() OVER (ORDER BY ${orderBy}) AS rn
-             FROM business_rules
-         ) o ON o.creation_index = b.creation_index
-       SET b.execution_order = o.rn`);
-  }
-  if (await hasColumn('business_rules', 'seq')) {
-    await pool.query('ALTER TABLE business_rules DROP COLUMN seq');
-  }
-
-  // 3) needs_to_be_established. A boolean flag set when a rule is handed to a
-  //    Claude session to be built ("Submit with Claude"); absent on older tables.
-  if (!(await hasColumn('business_rules', 'needs_to_be_established'))) {
-    await pool.query('ALTER TABLE business_rules ADD COLUMN needs_to_be_established TINYINT(1) NOT NULL DEFAULT 0 AFTER delta');
-  }
 
   // Technical specification — the PARENT entity for how a single Business Rule is
-  // implemented. Exactly one per BR (uq_techspec_br). Unlike Additional Agent
-  // Information (forward-looking, cross-cutting guidance loaded once development
-  // reaches a referenced BR), a technical spec is scoped to THIS BR: it groups the
-  // implementation instructions (entries) and the generated file changes
-  // (artifacts) that together realise the rule.
-  await pool.query(`
+  // implemented. Exactly one per BR (uq_techspec_br). `application_id` is carried
+  // directly (like the other tables) so reads/writes scope by the active app; the
+  // BR link resolves the spec's name/order. Unlike Additional Agent Information
+  // (forward-looking, cross-cutting), a spec is scoped to THIS BR: it groups the
+  // implementation instructions (entries) and generated file changes (artifacts).
+  await storePool.query(`
     CREATE TABLE IF NOT EXISTS technical_specifications (
       id               VARCHAR(36)  NOT NULL PRIMARY KEY,
+      application_id   VARCHAR(36)  NOT NULL,
       business_rule_id VARCHAR(36)  NOT NULL,
       title            VARCHAR(255),
       overview         TEXT,
@@ -546,13 +202,15 @@ async function migrateBusinessRulesSchema(pool) {
       created_at       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       UNIQUE KEY uq_techspec_br (business_rule_id),
+      KEY idx_techspec_app (application_id),
+      CONSTRAINT fk_techspec_app FOREIGN KEY (application_id) REFERENCES applications(id) ON DELETE CASCADE,
       CONSTRAINT fk_techspec_br FOREIGN KEY (business_rule_id) REFERENCES business_rules(creation_index) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 
   // A single implementation instruction under a spec. `source` records who wrote
   // it: 'user' (a human directive) or 'agent' (generated by a develop agent).
-  // The develop agents read these as authoritative instructions for the BR.
-  await pool.query(`
+  // Scoped to an application through its parent spec (no direct application_id).
+  await storePool.query(`
     CREATE TABLE IF NOT EXISTS technical_specification_entries (
       id                        VARCHAR(36) NOT NULL PRIMARY KEY,
       technical_specification_id VARCHAR(36) NOT NULL,
@@ -567,7 +225,7 @@ async function migrateBusinessRulesSchema(pool) {
   // A generated file change the spec is parent to — the class diagram, openapi
   // slice, component, migration, test, etc. that a develop agent produced for the
   // BR. `kind` classifies the artifact, `change_type` mirrors the BR delta model.
-  await pool.query(`
+  await storePool.query(`
     CREATE TABLE IF NOT EXISTS technical_specification_artifacts (
       id                        VARCHAR(36)  NOT NULL PRIMARY KEY,
       technical_specification_id VARCHAR(36)  NOT NULL,
@@ -582,35 +240,131 @@ async function migrateBusinessRulesSchema(pool) {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`);
 }
 
-// Ensure the target database itself exists before we open a data pool to it.
-// The epics/business_rules tables live in each application's OWN schema, so for a
-// freshly-registered app (e.g. applicationstatemanager) we create the schema on
-// first touch, mirroring how Store A provisions its own database on startup.
-async function ensureTargetDatabase(row) {
-  const admin = await mysql.createConnection({
-    host: row.host, port: row.port, user: row.username, password: decrypt(row.password_enc),
-    ssl: row.use_ssl ? { rejectUnauthorized: false } : undefined, connectTimeout: 8000,
-  });
-  try {
-    await admin.query(`CREATE DATABASE IF NOT EXISTS ${backtick(row.database_name)} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
-  } finally {
-    try { await admin.end(); } catch { /* ignore */ }
+function status() {
+  return { ready, error: initError, store: { host: STORE.host, port: STORE.port, database: STORE.database } };
+}
+
+function ensureReady() {
+  if (!ready) {
+    const e = new Error(initError ? `Store unavailable: ${initError}` : 'Store not initialised');
+    e.status = 503;
+    throw e;
   }
 }
 
-// Open (and lazily provision) the target's pool for application-data work.
-async function appPool(id) {
-  if (!appSchemaReady.has(id)) {
-    const row = await getRow(id);
-    if (!row) throw badRequest('connection not found');
-    await ensureTargetDatabase(row);
+function badRequest(msg) {
+  const e = new Error(msg);
+  e.status = 400;
+  return e;
+}
+
+// ── Applications ──────────────────────────────────────────────────────────────
+function appRowToDto(r) {
+  return {
+    id: r.id,
+    name: r.name,
+    description: r.description ?? null,
+    rootDir: r.root_dir ?? null,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+function normaliseApplication(input) {
+  const name = String(input?.name ?? '').trim();
+  if (!name) throw badRequest('name is required');
+  return {
+    name,
+    description: input?.description == null ? null : String(input.description),
+    rootDir: input?.rootDir == null ? null : String(input.rootDir).trim() || null,
+  };
+}
+
+async function listApplications() {
+  ensureReady();
+  const [rows] = await storePool.query('SELECT * FROM applications ORDER BY name');
+  return rows.map(appRowToDto);
+}
+
+async function getApplicationRow(id) {
+  const [rows] = await storePool.query('SELECT * FROM applications WHERE id = ?', [id]);
+  return rows[0] || null;
+}
+
+async function getApplication(id) {
+  ensureReady();
+  const row = await getApplicationRow(id);
+  return row ? appRowToDto(row) : null;
+}
+
+// Guard: reject data operations aimed at an application that doesn't exist, so a
+// stale client id surfaces as 400 instead of silently writing an orphan row.
+async function assertApplication(id) {
+  ensureReady();
+  const row = await getApplicationRow(id);
+  if (!row) throw badRequest('application not found');
+  return row;
+}
+
+async function createApplication(input) {
+  ensureReady();
+  const a = normaliseApplication(input);
+  const id = crypto.randomUUID();
+  try {
+    await storePool.query(
+      'INSERT INTO applications (id, name, description, root_dir) VALUES (?, ?, ?, ?)',
+      [id, a.name, a.description, a.rootDir],
+    );
+  } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY') throw badRequest(`An application named "${a.name}" already exists`);
+    throw err;
   }
-  const pool = await targetPool(id);
-  if (!appSchemaReady.has(id)) {
-    await ensureAppSchema(pool);
-    appSchemaReady.add(id);
+  return getApplication(id);
+}
+
+async function updateApplication(id, input) {
+  ensureReady();
+  const existing = await getApplicationRow(id);
+  if (!existing) return null;
+  const a = normaliseApplication(input);
+  try {
+    await storePool.query(
+      'UPDATE applications SET name = ?, description = ?, root_dir = ? WHERE id = ?',
+      [a.name, a.description, a.rootDir, id],
+    );
+  } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY') throw badRequest(`An application named "${a.name}" already exists`);
+    throw err;
   }
-  return pool;
+  return getApplication(id);
+}
+
+async function deleteApplication(id) {
+  ensureReady();
+  // CASCADE removes the application's epics / BRs / notes / agent-info / snapshots.
+  const [res] = await storePool.query('DELETE FROM applications WHERE id = ?', [id]);
+  const active = await getActiveId();
+  if (active === id) await setActiveId(null);
+  return res.affectedRows > 0;
+}
+
+// ── Active selection (which application the app currently shows) ───────────────
+const ACTIVE_KEY = 'active_application_id';
+
+async function getActiveId() {
+  ensureReady();
+  const [rows] = await storePool.query('SELECT v FROM app_settings WHERE k = ?', [ACTIVE_KEY]);
+  return rows.length ? rows[0].v : null;
+}
+
+async function setActiveId(id) {
+  ensureReady();
+  if (id) await assertApplication(id);
+  await storePool.query(
+    'INSERT INTO app_settings (k, v) VALUES (?, ?) ON DUPLICATE KEY UPDATE v = VALUES(v)',
+    [ACTIVE_KEY, id ?? null],
+  );
+  return id ?? null;
 }
 
 function toJsonText(v) { return JSON.stringify(v ?? null); }
@@ -645,52 +399,50 @@ function normaliseEpic(input) {
   };
 }
 
-async function listEpics(id) {
-  ensureReady();
-  const pool = await appPool(id);
-  const [rows] = await pool.query('SELECT * FROM epics ORDER BY seq IS NULL, seq, title');
+async function listEpics(appId) {
+  await assertApplication(appId);
+  const [rows] = await storePool.query(
+    'SELECT * FROM epics WHERE application_id = ? ORDER BY seq IS NULL, seq, title', [appId]);
   return rows.map(epicRowToDto);
 }
 
-async function createEpic(id, input) {
-  ensureReady();
-  const pool = await appPool(id);
+async function createEpic(appId, input) {
+  await assertApplication(appId);
   const e = normaliseEpic(input);
   const epicId = crypto.randomUUID();
   try {
-    await pool.query(
-      'INSERT INTO epics (id, epic_key, title, description, seq) VALUES (?, ?, ?, ?, ?)',
-      [epicId, e.key, e.title, e.description, e.seq],
+    await storePool.query(
+      'INSERT INTO epics (id, application_id, epic_key, title, description, seq) VALUES (?, ?, ?, ?, ?, ?)',
+      [epicId, appId, e.key, e.title, e.description, e.seq],
     );
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') throw badRequest(`An epic with key "${e.key}" already exists`);
     throw err;
   }
-  const [rows] = await pool.query('SELECT * FROM epics WHERE id = ?', [epicId]);
+  const [rows] = await storePool.query('SELECT * FROM epics WHERE id = ?', [epicId]);
   return epicRowToDto(rows[0]);
 }
 
-async function updateEpic(id, epicId, input) {
-  ensureReady();
-  const pool = await appPool(id);
+async function updateEpic(appId, epicId, input) {
+  await assertApplication(appId);
   const e = normaliseEpic(input);
-  const [res] = await pool.query(
-    'UPDATE epics SET epic_key = ?, title = ?, description = ?, seq = ? WHERE id = ?',
-    [e.key, e.title, e.description, e.seq, epicId],
+  const [res] = await storePool.query(
+    'UPDATE epics SET epic_key = ?, title = ?, description = ?, seq = ? WHERE id = ? AND application_id = ?',
+    [e.key, e.title, e.description, e.seq, epicId, appId],
   ).catch(err => {
     if (err.code === 'ER_DUP_ENTRY') throw badRequest(`An epic with key "${e.key}" already exists`);
     throw err;
   });
   if (res.affectedRows === 0) return null;
-  const [rows] = await pool.query('SELECT * FROM epics WHERE id = ?', [epicId]);
+  const [rows] = await storePool.query('SELECT * FROM epics WHERE id = ?', [epicId]);
   return epicRowToDto(rows[0]);
 }
 
-async function deleteEpic(id, epicId) {
-  ensureReady();
-  const pool = await appPool(id);
+async function deleteEpic(appId, epicId) {
+  await assertApplication(appId);
   // FK is ON DELETE SET NULL, so member BRs survive un-grouped.
-  const [res] = await pool.query('DELETE FROM epics WHERE id = ?', [epicId]);
+  const [res] = await storePool.query(
+    'DELETE FROM epics WHERE id = ? AND application_id = ?', [epicId, appId]);
   return res.affectedRows > 0;
 }
 
@@ -719,43 +471,41 @@ function normaliseNote(input) {
   };
 }
 
-async function listNotes(id) {
-  ensureReady();
-  const pool = await appPool(id);
-  const [rows] = await pool.query('SELECT * FROM notes ORDER BY updated_at DESC, title');
+async function listNotes(appId) {
+  await assertApplication(appId);
+  const [rows] = await storePool.query(
+    'SELECT * FROM notes WHERE application_id = ? ORDER BY updated_at DESC, title', [appId]);
   return rows.map(noteRowToDto);
 }
 
-async function createNote(id, input) {
-  ensureReady();
-  const pool = await appPool(id);
+async function createNote(appId, input) {
+  await assertApplication(appId);
   const n = normaliseNote(input);
   const noteId = crypto.randomUUID();
-  await pool.query(
-    'INSERT INTO notes (id, title, description, related_brs) VALUES (?, ?, ?, ?)',
-    [noteId, n.title, n.description, toJsonText(n.relatedBrs)],
+  await storePool.query(
+    'INSERT INTO notes (id, application_id, title, description, related_brs) VALUES (?, ?, ?, ?, ?)',
+    [noteId, appId, n.title, n.description, toJsonText(n.relatedBrs)],
   );
-  const [rows] = await pool.query('SELECT * FROM notes WHERE id = ?', [noteId]);
+  const [rows] = await storePool.query('SELECT * FROM notes WHERE id = ?', [noteId]);
   return noteRowToDto(rows[0]);
 }
 
-async function updateNote(id, noteId, input) {
-  ensureReady();
-  const pool = await appPool(id);
+async function updateNote(appId, noteId, input) {
+  await assertApplication(appId);
   const n = normaliseNote(input);
-  const [res] = await pool.query(
-    'UPDATE notes SET title = ?, description = ?, related_brs = ? WHERE id = ?',
-    [n.title, n.description, toJsonText(n.relatedBrs), noteId],
+  const [res] = await storePool.query(
+    'UPDATE notes SET title = ?, description = ?, related_brs = ? WHERE id = ? AND application_id = ?',
+    [n.title, n.description, toJsonText(n.relatedBrs), noteId, appId],
   );
   if (res.affectedRows === 0) return null;
-  const [rows] = await pool.query('SELECT * FROM notes WHERE id = ?', [noteId]);
+  const [rows] = await storePool.query('SELECT * FROM notes WHERE id = ?', [noteId]);
   return noteRowToDto(rows[0]);
 }
 
-async function deleteNote(id, noteId) {
-  ensureReady();
-  const pool = await appPool(id);
-  const [res] = await pool.query('DELETE FROM notes WHERE id = ?', [noteId]);
+async function deleteNote(appId, noteId) {
+  await assertApplication(appId);
+  const [res] = await storePool.query(
+    'DELETE FROM notes WHERE id = ? AND application_id = ?', [noteId, appId]);
   return res.affectedRows > 0;
 }
 
@@ -805,35 +555,35 @@ function normaliseBr(input) {
   };
 }
 
-async function listBusinessRules(id) {
-  ensureReady();
-  const pool = await appPool(id);
-  const [rows] = await pool.query('SELECT * FROM business_rules ORDER BY execution_order IS NULL, execution_order, name');
+async function listBusinessRules(appId) {
+  await assertApplication(appId);
+  const [rows] = await storePool.query(
+    'SELECT * FROM business_rules WHERE application_id = ? ORDER BY execution_order IS NULL, execution_order, name', [appId]);
   return rows.map(brRowToDto);
 }
 
-async function getBrRow(pool, brId) {
-  const [rows] = await pool.query('SELECT * FROM business_rules WHERE creation_index = ?', [brId]);
+async function getBrRow(brId) {
+  const [rows] = await storePool.query('SELECT * FROM business_rules WHERE creation_index = ?', [brId]);
   return rows[0] || null;
 }
 
-async function createBusinessRule(id, input) {
-  ensureReady();
-  const pool = await appPool(id);
+async function createBusinessRule(appId, input) {
+  await assertApplication(appId);
   const b = normaliseBr(input);
   const brId = crypto.randomUUID();
-  // execution_order is global; default a new rule to the end of the list.
+  // execution_order is global within an application; default a new rule to the end.
   let executionOrder = b.executionOrder;
   if (executionOrder == null) {
-    const [[{ next }]] = await pool.query('SELECT COALESCE(MAX(execution_order), 0) + 1 AS next FROM business_rules');
+    const [[{ next }]] = await storePool.query(
+      'SELECT COALESCE(MAX(execution_order), 0) + 1 AS next FROM business_rules WHERE application_id = ?', [appId]);
     executionOrder = next;
   }
   try {
-    await pool.query(
+    await storePool.query(
       `INSERT INTO business_rules
-         (creation_index, name, epic_id, execution_order, rule, rationale, category, features, modifies_features, depends_on, touches, delta, needs_to_be_established)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [brId, b.name, b.epicId, executionOrder, b.rule, b.rationale, b.category,
+         (creation_index, application_id, name, epic_id, execution_order, rule, rationale, category, features, modifies_features, depends_on, touches, delta, needs_to_be_established)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [brId, appId, b.name, b.epicId, executionOrder, b.rule, b.rationale, b.category,
         toJsonText(b.features), toJsonText(b.modifiesFeatures), toJsonText(b.dependsOn),
         toJsonText(b.touches), toJsonText(b.delta), b.needsToBeEstablished ? 1 : 0],
     );
@@ -842,23 +592,22 @@ async function createBusinessRule(id, input) {
     if (err.code === 'ER_NO_REFERENCED_ROW_2' || err.code === 'ER_NO_REFERENCED_ROW') throw badRequest('epicId does not match an existing epic');
     throw err;
   }
-  return brRowToDto(await getBrRow(pool, brId));
+  return brRowToDto(await getBrRow(brId));
 }
 
-async function updateBusinessRule(id, brId, input) {
-  ensureReady();
-  const pool = await appPool(id);
+async function updateBusinessRule(appId, brId, input) {
+  await assertApplication(appId);
   const b = normaliseBr(input);
   let res;
   try {
-    [res] = await pool.query(
+    [res] = await storePool.query(
       `UPDATE business_rules SET
          name = ?, epic_id = ?, execution_order = ?, rule = ?, rationale = ?, category = ?,
          features = ?, modifies_features = ?, depends_on = ?, touches = ?, delta = ?, needs_to_be_established = ?
-       WHERE creation_index = ?`,
+       WHERE creation_index = ? AND application_id = ?`,
       [b.name, b.epicId, b.executionOrder, b.rule, b.rationale, b.category,
         toJsonText(b.features), toJsonText(b.modifiesFeatures), toJsonText(b.dependsOn),
-        toJsonText(b.touches), toJsonText(b.delta), b.needsToBeEstablished ? 1 : 0, brId],
+        toJsonText(b.touches), toJsonText(b.delta), b.needsToBeEstablished ? 1 : 0, brId, appId],
     );
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') throw badRequest(`A business rule named "${b.name}" already exists`);
@@ -866,13 +615,13 @@ async function updateBusinessRule(id, brId, input) {
     throw err;
   }
   if (res.affectedRows === 0) return null;
-  return brRowToDto(await getBrRow(pool, brId));
+  return brRowToDto(await getBrRow(brId));
 }
 
-async function deleteBusinessRule(id, brId) {
-  ensureReady();
-  const pool = await appPool(id);
-  const [res] = await pool.query('DELETE FROM business_rules WHERE creation_index = ?', [brId]);
+async function deleteBusinessRule(appId, brId) {
+  await assertApplication(appId);
+  const [res] = await storePool.query(
+    'DELETE FROM business_rules WHERE creation_index = ? AND application_id = ?', [brId, appId]);
   return res.affectedRows > 0;
 }
 
@@ -905,10 +654,10 @@ const AGENT_INFO_SELECT = `
     FROM br_additional_agent_information ai
     JOIN business_rules br ON br.creation_index = ai.business_rule_id`;
 
-async function listAgentInfo(id) {
-  ensureReady();
-  const pool = await appPool(id);
-  const [rows] = await pool.query(`${AGENT_INFO_SELECT} ORDER BY br.execution_order IS NULL, br.execution_order, ai.created_at`);
+async function listAgentInfo(appId) {
+  await assertApplication(appId);
+  const [rows] = await storePool.query(
+    `${AGENT_INFO_SELECT} WHERE ai.application_id = ? ORDER BY br.execution_order IS NULL, br.execution_order, ai.created_at`, [appId]);
   return rows.map(agentInfoRowToDto);
 }
 
@@ -920,55 +669,53 @@ function normaliseAgentInfo(input) {
   return { businessRuleId, description };
 }
 
-async function createAgentInfo(id, input) {
-  ensureReady();
-  const pool = await appPool(id);
+async function createAgentInfo(appId, input) {
+  await assertApplication(appId);
   const a = normaliseAgentInfo(input);
   const infoId = crypto.randomUUID();
   try {
-    await pool.query(
-      'INSERT INTO br_additional_agent_information (id, business_rule_id, description) VALUES (?, ?, ?)',
-      [infoId, a.businessRuleId, a.description],
+    await storePool.query(
+      'INSERT INTO br_additional_agent_information (id, application_id, business_rule_id, description) VALUES (?, ?, ?, ?)',
+      [infoId, appId, a.businessRuleId, a.description],
     );
   } catch (err) {
     if (err.code === 'ER_NO_REFERENCED_ROW_2' || err.code === 'ER_NO_REFERENCED_ROW') throw badRequest('businessRuleId does not match an existing Business Rule');
     throw err;
   }
-  const [rows] = await pool.query(`${AGENT_INFO_SELECT} WHERE ai.id = ?`, [infoId]);
+  const [rows] = await storePool.query(`${AGENT_INFO_SELECT} WHERE ai.id = ?`, [infoId]);
   return agentInfoRowToDto(rows[0]);
 }
 
-async function updateAgentInfo(id, infoId, input) {
-  ensureReady();
-  const pool = await appPool(id);
+async function updateAgentInfo(appId, infoId, input) {
+  await assertApplication(appId);
   const a = normaliseAgentInfo(input);
   let res;
   try {
-    [res] = await pool.query(
-      'UPDATE br_additional_agent_information SET business_rule_id = ?, description = ? WHERE id = ?',
-      [a.businessRuleId, a.description, infoId],
+    [res] = await storePool.query(
+      'UPDATE br_additional_agent_information SET business_rule_id = ?, description = ? WHERE id = ? AND application_id = ?',
+      [a.businessRuleId, a.description, infoId, appId],
     );
   } catch (err) {
     if (err.code === 'ER_NO_REFERENCED_ROW_2' || err.code === 'ER_NO_REFERENCED_ROW') throw badRequest('businessRuleId does not match an existing Business Rule');
     throw err;
   }
   if (res.affectedRows === 0) return null;
-  const [rows] = await pool.query(`${AGENT_INFO_SELECT} WHERE ai.id = ?`, [infoId]);
+  const [rows] = await storePool.query(`${AGENT_INFO_SELECT} WHERE ai.id = ?`, [infoId]);
   return agentInfoRowToDto(rows[0]);
 }
 
-async function deleteAgentInfo(id, infoId) {
-  ensureReady();
-  const pool = await appPool(id);
-  const [res] = await pool.query('DELETE FROM br_additional_agent_information WHERE id = ?', [infoId]);
+async function deleteAgentInfo(appId, infoId) {
+  await assertApplication(appId);
+  const [res] = await storePool.query(
+    'DELETE FROM br_additional_agent_information WHERE id = ? AND application_id = ?', [infoId, appId]);
   return res.affectedRows > 0;
 }
 
 // The develop-time query: every agent-info entry whose referenced BR has already
 // been reached by development, i.e. referenced BR execution_order <= the order
 // under development.
-async function listAgentInfoUpToExecutionOrder(id, executionOrder) {
-  const all = await listAgentInfo(id);
+async function listAgentInfoUpToExecutionOrder(appId, executionOrder) {
+  const all = await listAgentInfo(appId);
   return all.filter((a) => executionOrderCompare(a.brExecutionOrder, executionOrder) <= 0);
 }
 
@@ -993,6 +740,8 @@ function snapshotMetaRowToDto(r) {
 // generated file changes — class diagram, endpoints, components, migrations,
 // tests — that realise the rule). Reads join the BR for its name + seq and embed
 // the children so the client and the develop agents get the whole spec at once.
+// Everything lives in the one store DB, scoped to an application by application_id
+// (entries/artifacts scope through their parent spec).
 const TS_SELECT = `
   SELECT ts.*, br.name AS br_name, br.execution_order AS br_seq
     FROM technical_specifications ts
@@ -1053,32 +802,36 @@ function normaliseSpec(input) {
   };
 }
 
-// Fetch one spec with its children embedded (post-mutation reads).
-async function getTechnicalSpecFull(pool, specId) {
-  const [rows] = await pool.query(`${TS_SELECT} WHERE ts.id = ?`, [specId]);
+// Fetch one spec with its children embedded (post-mutation reads). Spec ids are
+// globally unique, so this reads by id alone; callers app-scope via specExists.
+async function getTechnicalSpecFull(specId) {
+  const [rows] = await storePool.query(`${TS_SELECT} WHERE ts.id = ?`, [specId]);
   if (!rows.length) return null;
-  const [entries] = await pool.query(
+  const [entries] = await storePool.query(
     'SELECT * FROM technical_specification_entries WHERE technical_specification_id = ? ORDER BY created_at', [specId]);
-  const [artifacts] = await pool.query(
+  const [artifacts] = await storePool.query(
     'SELECT * FROM technical_specification_artifacts WHERE technical_specification_id = ? ORDER BY created_at', [specId]);
   return specRowToDto(rows[0], entries, artifacts);
 }
 
-async function specExists(pool, specId) {
-  const [rows] = await pool.query('SELECT id FROM technical_specifications WHERE id = ?', [specId]);
+// True when the spec exists AND belongs to the given application — the scoping
+// guard the entry/artifact routes use before touching a spec's children.
+async function specExists(appId, specId) {
+  const [rows] = await storePool.query(
+    'SELECT id FROM technical_specifications WHERE id = ? AND application_id = ?', [specId, appId]);
   return rows.length > 0;
 }
 
-async function listTechnicalSpecs(id) {
-  ensureReady();
-  const pool = await appPool(id);
-  const [specs] = await pool.query(`${TS_SELECT} ORDER BY br.execution_order IS NULL, br.execution_order, ts.created_at`);
+async function listTechnicalSpecs(appId) {
+  await assertApplication(appId);
+  const [specs] = await storePool.query(
+    `${TS_SELECT} WHERE ts.application_id = ? ORDER BY br.execution_order IS NULL, br.execution_order, ts.created_at`, [appId]);
   if (!specs.length) return [];
   const ids = specs.map((s) => s.id);
   const placeholders = ids.map(() => '?').join(',');
-  const [entries] = await pool.query(
+  const [entries] = await storePool.query(
     `SELECT * FROM technical_specification_entries WHERE technical_specification_id IN (${placeholders}) ORDER BY created_at`, ids);
-  const [artifacts] = await pool.query(
+  const [artifacts] = await storePool.query(
     `SELECT * FROM technical_specification_artifacts WHERE technical_specification_id IN (${placeholders}) ORDER BY created_at`, ids);
   const groupBy = (rows) => rows.reduce((m, r) => {
     (m[r.technical_specification_id] ??= []).push(r); return m;
@@ -1088,43 +841,41 @@ async function listTechnicalSpecs(id) {
   return specs.map((s) => specRowToDto(s, eBySpec[s.id] ?? [], aBySpec[s.id] ?? []));
 }
 
-async function createTechnicalSpec(id, input) {
-  ensureReady();
-  const pool = await appPool(id);
+async function createTechnicalSpec(appId, input) {
+  await assertApplication(appId);
   const s = normaliseSpec(input);
   const specId = crypto.randomUUID();
   try {
-    await pool.query(
-      'INSERT INTO technical_specifications (id, business_rule_id, title, overview, status) VALUES (?, ?, ?, ?, ?)',
-      [specId, s.businessRuleId, s.title, s.overview, s.status],
+    await storePool.query(
+      'INSERT INTO technical_specifications (id, application_id, business_rule_id, title, overview, status) VALUES (?, ?, ?, ?, ?, ?)',
+      [specId, appId, s.businessRuleId, s.title, s.overview, s.status],
     );
   } catch (err) {
     if (err.code === 'ER_DUP_ENTRY') throw badRequest('this Business Rule already has a technical specification');
     if (err.code === 'ER_NO_REFERENCED_ROW_2' || err.code === 'ER_NO_REFERENCED_ROW') throw badRequest('businessRuleId does not match an existing Business Rule');
     throw err;
   }
-  return getTechnicalSpecFull(pool, specId);
+  return getTechnicalSpecFull(specId);
 }
 
-async function updateTechnicalSpec(id, specId, input) {
-  ensureReady();
-  const pool = await appPool(id);
+async function updateTechnicalSpec(appId, specId, input) {
+  await assertApplication(appId);
   // businessRuleId is fixed at creation — a spec stays bound to its BR.
   const title = input?.title == null ? null : String(input.title).trim() || null;
   const overview = input?.overview == null ? null : String(input.overview);
   const status = String(input?.status ?? 'draft').trim() || 'draft';
-  const [res] = await pool.query(
-    'UPDATE technical_specifications SET title = ?, overview = ?, status = ? WHERE id = ?',
-    [title, overview, status, specId],
+  const [res] = await storePool.query(
+    'UPDATE technical_specifications SET title = ?, overview = ?, status = ? WHERE id = ? AND application_id = ?',
+    [title, overview, status, specId, appId],
   );
-  if (res.affectedRows === 0) return null;
-  return getTechnicalSpecFull(pool, specId);
+  if (res.affectedRows === 0) return (await specExists(appId, specId)) ? getTechnicalSpecFull(specId) : null;
+  return getTechnicalSpecFull(specId);
 }
 
-async function deleteTechnicalSpec(id, specId) {
-  ensureReady();
-  const pool = await appPool(id);
-  const [res] = await pool.query('DELETE FROM technical_specifications WHERE id = ?', [specId]);
+async function deleteTechnicalSpec(appId, specId) {
+  await assertApplication(appId);
+  const [res] = await storePool.query(
+    'DELETE FROM technical_specifications WHERE id = ? AND application_id = ?', [specId, appId]);
   return res.affectedRows > 0;
 }
 
@@ -1137,37 +888,36 @@ function normaliseSpecEntry(input) {
   return { description, source };
 }
 
-async function createSpecEntry(id, specId, input) {
-  ensureReady();
-  const pool = await appPool(id);
-  if (!(await specExists(pool, specId))) return null;
+async function createSpecEntry(appId, specId, input) {
+  await assertApplication(appId);
+  if (!(await specExists(appId, specId))) return null;
   const e = normaliseSpecEntry(input);
   const entryId = crypto.randomUUID();
-  await pool.query(
+  await storePool.query(
     'INSERT INTO technical_specification_entries (id, technical_specification_id, description, source) VALUES (?, ?, ?, ?)',
     [entryId, specId, e.description, e.source],
   );
-  const [rows] = await pool.query('SELECT * FROM technical_specification_entries WHERE id = ?', [entryId]);
+  const [rows] = await storePool.query('SELECT * FROM technical_specification_entries WHERE id = ?', [entryId]);
   return specEntryRowToDto(rows[0]);
 }
 
-async function updateSpecEntry(id, specId, entryId, input) {
-  ensureReady();
-  const pool = await appPool(id);
+async function updateSpecEntry(appId, specId, entryId, input) {
+  await assertApplication(appId);
+  if (!(await specExists(appId, specId))) return null;
   const e = normaliseSpecEntry(input);
-  const [res] = await pool.query(
+  const [res] = await storePool.query(
     'UPDATE technical_specification_entries SET description = ?, source = ? WHERE id = ? AND technical_specification_id = ?',
     [e.description, e.source, entryId, specId],
   );
   if (res.affectedRows === 0) return null;
-  const [rows] = await pool.query('SELECT * FROM technical_specification_entries WHERE id = ?', [entryId]);
+  const [rows] = await storePool.query('SELECT * FROM technical_specification_entries WHERE id = ?', [entryId]);
   return specEntryRowToDto(rows[0]);
 }
 
-async function deleteSpecEntry(id, specId, entryId) {
-  ensureReady();
-  const pool = await appPool(id);
-  const [res] = await pool.query(
+async function deleteSpecEntry(appId, specId, entryId) {
+  await assertApplication(appId);
+  if (!(await specExists(appId, specId))) return false;
+  const [res] = await storePool.query(
     'DELETE FROM technical_specification_entries WHERE id = ? AND technical_specification_id = ?', [entryId, specId]);
   return res.affectedRows > 0;
 }
@@ -1186,53 +936,51 @@ function normaliseSpecArtifact(input) {
   };
 }
 
-async function createSpecArtifact(id, specId, input) {
-  ensureReady();
-  const pool = await appPool(id);
-  if (!(await specExists(pool, specId))) return null;
+async function createSpecArtifact(appId, specId, input) {
+  await assertApplication(appId);
+  if (!(await specExists(appId, specId))) return null;
   const a = normaliseSpecArtifact(input);
   const artifactId = crypto.randomUUID();
-  await pool.query(
+  await storePool.query(
     'INSERT INTO technical_specification_artifacts (id, technical_specification_id, kind, path, change_type, summary) VALUES (?, ?, ?, ?, ?, ?)',
     [artifactId, specId, a.kind, a.path, a.changeType, a.summary],
   );
-  const [rows] = await pool.query('SELECT * FROM technical_specification_artifacts WHERE id = ?', [artifactId]);
+  const [rows] = await storePool.query('SELECT * FROM technical_specification_artifacts WHERE id = ?', [artifactId]);
   return specArtifactRowToDto(rows[0]);
 }
 
-async function updateSpecArtifact(id, specId, artifactId, input) {
-  ensureReady();
-  const pool = await appPool(id);
+async function updateSpecArtifact(appId, specId, artifactId, input) {
+  await assertApplication(appId);
+  if (!(await specExists(appId, specId))) return null;
   const a = normaliseSpecArtifact(input);
-  const [res] = await pool.query(
+  const [res] = await storePool.query(
     'UPDATE technical_specification_artifacts SET kind = ?, path = ?, change_type = ?, summary = ? WHERE id = ? AND technical_specification_id = ?',
     [a.kind, a.path, a.changeType, a.summary, artifactId, specId],
   );
   if (res.affectedRows === 0) return null;
-  const [rows] = await pool.query('SELECT * FROM technical_specification_artifacts WHERE id = ?', [artifactId]);
+  const [rows] = await storePool.query('SELECT * FROM technical_specification_artifacts WHERE id = ?', [artifactId]);
   return specArtifactRowToDto(rows[0]);
 }
 
-async function deleteSpecArtifact(id, specId, artifactId) {
-  ensureReady();
-  const pool = await appPool(id);
-  const [res] = await pool.query(
+async function deleteSpecArtifact(appId, specId, artifactId) {
+  await assertApplication(appId);
+  if (!(await specExists(appId, specId))) return false;
+  const [res] = await storePool.query(
     'DELETE FROM technical_specification_artifacts WHERE id = ? AND technical_specification_id = ?', [artifactId, specId]);
   return res.affectedRows > 0;
 }
 
-async function listSnapshots(id) {
-  ensureReady();
-  const pool = await appPool(id);
-  const [rows] = await pool.query(
-    'SELECT id, label, epic_count, rule_count, created_at FROM br_snapshots ORDER BY created_at DESC, id');
+async function listSnapshots(appId) {
+  await assertApplication(appId);
+  const [rows] = await storePool.query(
+    'SELECT id, label, epic_count, rule_count, created_at FROM br_snapshots WHERE application_id = ? ORDER BY created_at DESC, id', [appId]);
   return rows.map(snapshotMetaRowToDto);
 }
 
-async function getSnapshot(id, snapId) {
-  ensureReady();
-  const pool = await appPool(id);
-  const [rows] = await pool.query('SELECT * FROM br_snapshots WHERE id = ?', [snapId]);
+async function getSnapshot(appId, snapId) {
+  await assertApplication(appId);
+  const [rows] = await storePool.query(
+    'SELECT * FROM br_snapshots WHERE id = ? AND application_id = ?', [snapId, appId]);
   const r = rows[0];
   if (!r) return null;
   return {
@@ -1245,33 +993,30 @@ async function getSnapshot(id, snapId) {
 // Capture the CURRENT epics + business rules as a new snapshot. The label is the
 // only caller-supplied field; everything else is read live from the DB so a
 // snapshot always reflects the true state at capture time.
-async function createSnapshot(id, input) {
-  ensureReady();
-  const pool = await appPool(id);
+async function createSnapshot(appId, input) {
+  await assertApplication(appId);
   const label = String(input?.label ?? '').trim() || 'Snapshot';
-  const epics = await listEpics(id);
-  const rules = await listBusinessRules(id);
+  const epics = await listEpics(appId);
+  const rules = await listBusinessRules(appId);
   const snapId = crypto.randomUUID();
-  await pool.query(
-    'INSERT INTO br_snapshots (id, label, epics, rules, epic_count, rule_count) VALUES (?, ?, ?, ?, ?, ?)',
-    [snapId, label, toJsonText(epics), toJsonText(rules), epics.length, rules.length],
+  await storePool.query(
+    'INSERT INTO br_snapshots (id, application_id, label, epics, rules, epic_count, rule_count) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [snapId, appId, label, toJsonText(epics), toJsonText(rules), epics.length, rules.length],
   );
-  return getSnapshot(id, snapId);
+  return getSnapshot(appId, snapId);
 }
 
-async function deleteSnapshot(id, snapId) {
-  ensureReady();
-  const pool = await appPool(id);
-  const [res] = await pool.query('DELETE FROM br_snapshots WHERE id = ?', [snapId]);
+async function deleteSnapshot(appId, snapId) {
+  await assertApplication(appId);
+  const [res] = await storePool.query(
+    'DELETE FROM br_snapshots WHERE id = ? AND application_id = ?', [snapId, appId]);
   return res.affectedRows > 0;
 }
 
 module.exports = {
   init, status,
-  listConnections, getConnection, createConnection, updateConnection, deleteConnection,
+  listApplications, getApplication, createApplication, updateApplication, deleteApplication,
   getActiveId, setActiveId,
-  testParams, testExisting,
-  listTables, previewTable,
   listEpics, createEpic, updateEpic, deleteEpic,
   listNotes, createNote, updateNote, deleteNote,
   listBusinessRules, createBusinessRule, updateBusinessRule, deleteBusinessRule,

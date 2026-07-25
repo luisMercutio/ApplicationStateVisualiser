@@ -12,11 +12,11 @@ import { Subscription } from 'rxjs';
 import { AppBusinessRule, AppBusinessRuleInput, Epic } from '../../../models/app-data.model';
 import { Note, NoteInput } from '../../../models/note.model';
 import { categoryColor } from '../../../models/business-rule.model';
-import { DbConnection } from '../../../models/db-connection.model';
+import { Application } from '../../../models/application.model';
 import { AppDataActions } from '../../../store/app-data/app-data.actions';
 import { selectEpicsWithRules, selectAppDataLoading, selectAppDataError, selectAgentInfoCountByRule, selectNotes } from '../../../store/app-data/app-data.selectors';
 import { selectSpecEntryCountByRule } from '../../../store/technical-specs/technical-specs.selectors';
-import { selectActiveConnection } from '../../../store/connections/connections.selectors';
+import { selectActiveApplication } from '../../../store/applications/applications.selectors';
 import { BrFormDialogComponent, BrFormData, BrFormResult } from '../../br-form-dialog/br-form-dialog.component';
 import { NoteFormDialogComponent, NoteDialogData } from '../../note-form-dialog/note-form-dialog.component';
 import { EpicFormDialogComponent } from '../../epic-form-dialog/epic-form-dialog.component';
@@ -33,7 +33,7 @@ interface RuleList {
 const UNGROUPED = 'ungrouped';
 
 /**
- * Business Rules for the ACTIVE application connection, grouped under their Epics.
+ * Business Rules for the ACTIVE application, grouped under their Epics.
  * Full CRUD (add / edit / delete for both BRs and Epics) writes to that
  * application's own database. Rules drag to reorder and across Epics (which
  * reassigns the Epic and rewrites the global executionOrder). Dropping a rule
@@ -59,7 +59,7 @@ const UNGROUPED = 'ungrouped';
       </div>
 
       @if (!active()) {
-        <div class="msg">Select an application connection in the toolbar to manage its Business Rules.</div>
+        <div class="msg">Select an application in the toolbar to manage its Business Rules.</div>
       } @else if (loading()) {
         <div class="msg">Loading rules…</div>
       } @else if (error()) {
@@ -204,7 +204,7 @@ export class BrListComponent implements OnInit, OnDestroy {
   private workspace = inject(WorkspaceService);
   private subs: Subscription[] = [];
 
-  active = signal<DbConnection | null>(null);
+  active = signal<Application | null>(null);
   loading = signal(false);
   error = signal<string | null>(null);
   lists = signal<RuleList[]>([]);
@@ -219,7 +219,7 @@ export class BrListComponent implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     this.subs.push(
-      this.store.select(selectActiveConnection).subscribe((a) => this.active.set(a)),
+      this.store.select(selectActiveApplication).subscribe((a) => this.active.set(a)),
       this.store.select(selectAppDataLoading).subscribe((v) => this.loading.set(v)),
       this.store.select(selectAppDataError).subscribe((v) => this.error.set(v)),
       this.store.select(selectAgentInfoCountByRule).subscribe((c) => this.infoCounts.set(c)),
@@ -250,32 +250,32 @@ export class BrListComponent implements OnInit, OnDestroy {
   listId(list: RuleList): string { return list.epicId ?? UNGROUPED; }
   allListIds(): string[] { return this.lists().map((l) => this.listId(l)); }
 
-  private connId(): string | null { return this.active()?.id ?? null; }
+  private appId(): string | null { return this.active()?.id ?? null; }
 
   reload(): void {
-    const id = this.connId();
-    if (id) this.store.dispatch(AppDataActions.load({ connectionId: id }));
+    const id = this.appId();
+    if (id) this.store.dispatch(AppDataActions.load({ applicationId: id }));
   }
 
   // ── Epic CRUD ──
   addEpic(): void {
     this.dialog.open(EpicFormDialogComponent).afterClosed().subscribe((input) => {
-      const id = this.connId();
-      if (input && id) this.store.dispatch(AppDataActions.createEpic({ connectionId: id, input }));
+      const id = this.appId();
+      if (input && id) this.store.dispatch(AppDataActions.createEpic({ applicationId: id, input }));
     });
   }
 
   editEpic(epic: Epic): void {
     this.dialog.open(EpicFormDialogComponent, { data: epic }).afterClosed().subscribe((input) => {
-      const id = this.connId();
-      if (input && id) this.store.dispatch(AppDataActions.updateEpic({ connectionId: id, epicId: epic.id, input }));
+      const id = this.appId();
+      if (input && id) this.store.dispatch(AppDataActions.updateEpic({ applicationId: id, epicId: epic.id, input }));
     });
   }
 
   deleteEpic(epic: Epic): void {
-    const id = this.connId();
+    const id = this.appId();
     if (id && confirm(`Delete epic "${epic.title}"? Its Business Rules are kept (moved to Ungrouped).`)) {
-      this.store.dispatch(AppDataActions.deleteEpic({ connectionId: id, epicId: epic.id }));
+      this.store.dispatch(AppDataActions.deleteEpic({ applicationId: id, epicId: epic.id }));
     }
   }
 
@@ -283,12 +283,12 @@ export class BrListComponent implements OnInit, OnDestroy {
   addRule(defaultEpicId: string | null): void {
     const data: BrFormData = { epics: this.epics, defaultEpicId };
     this.dialog.open(BrFormDialogComponent, { data }).afterClosed().subscribe((res: BrFormResult | undefined) => {
-      const id = this.connId();
+      const id = this.appId();
       if (!res || !id) return;
       if (res.submitToClaude) {
-        this.store.dispatch(AppDataActions.submitToClaude({ connectionId: id, ruleId: null, input: res.input }));
+        this.store.dispatch(AppDataActions.submitToClaude({ applicationId: id, ruleId: null, input: res.input }));
       } else {
-        this.store.dispatch(AppDataActions.createRule({ connectionId: id, input: res.input }));
+        this.store.dispatch(AppDataActions.createRule({ applicationId: id, input: res.input }));
       }
     });
   }
@@ -296,27 +296,27 @@ export class BrListComponent implements OnInit, OnDestroy {
   editRule(rule: AppBusinessRule): void {
     const data: BrFormData = { rule, epics: this.epics };
     this.dialog.open(BrFormDialogComponent, { data }).afterClosed().subscribe((res: BrFormResult | undefined) => {
-      const id = this.connId();
+      const id = this.appId();
       if (!res || !id) return;
       if (res.submitToClaude) {
-        this.store.dispatch(AppDataActions.submitToClaude({ connectionId: id, ruleId: rule.creationIndex, input: res.input }));
+        this.store.dispatch(AppDataActions.submitToClaude({ applicationId: id, ruleId: rule.creationIndex, input: res.input }));
       } else {
-        this.store.dispatch(AppDataActions.updateRule({ connectionId: id, ruleId: rule.creationIndex, input: res.input }));
+        this.store.dispatch(AppDataActions.updateRule({ applicationId: id, ruleId: rule.creationIndex, input: res.input }));
       }
     });
   }
 
   deleteRule(rule: AppBusinessRule): void {
-    const id = this.connId();
+    const id = this.appId();
     if (id && confirm(`Delete Business Rule "${rule.name}"?`)) {
-      this.store.dispatch(AppDataActions.deleteRule({ connectionId: id, ruleId: rule.creationIndex }));
+      this.store.dispatch(AppDataActions.deleteRule({ applicationId: id, ruleId: rule.creationIndex }));
     }
   }
 
   openAgentInfo(rule: AppBusinessRule): void {
-    const id = this.connId();
+    const id = this.appId();
     if (!id) return;
-    const data: AgentInfoDialogData = { rule, connectionId: id };
+    const data: AgentInfoDialogData = { rule, applicationId: id };
     this.dialog.open(AgentInfoDialogComponent, { data });
   }
 
@@ -325,10 +325,10 @@ export class BrListComponent implements OnInit, OnDestroy {
   // submit-to-Claude flow as the BR form's "Submit with Claude" button, so the
   // spawned session then surfaces on the Claude Sessions page.
   openClaudeSession(rule: AppBusinessRule): void {
-    const id = this.connId();
+    const id = this.appId();
     if (!id) return;
     this.store.dispatch(AppDataActions.submitToClaude({
-      connectionId: id, ruleId: rule.creationIndex, input: ruleToInput(rule, {}),
+      applicationId: id, ruleId: rule.creationIndex, input: ruleToInput(rule, {}),
     }));
   }
 
@@ -342,10 +342,10 @@ export class BrListComponent implements OnInit, OnDestroy {
     const existing = this.noteFor(rule) ?? null;
     const data: NoteDialogData = { note: existing, lockedBr: rule.name };
     this.dialog.open(NoteFormDialogComponent, { data }).afterClosed().subscribe((input: NoteInput | undefined) => {
-      const id = this.connId();
+      const id = this.appId();
       if (!input || !id) return;
-      if (existing) this.store.dispatch(AppDataActions.updateNote({ connectionId: id, noteId: existing.id, input }));
-      else this.store.dispatch(AppDataActions.createNote({ connectionId: id, input }));
+      if (existing) this.store.dispatch(AppDataActions.updateNote({ applicationId: id, noteId: existing.id, input }));
+      else this.store.dispatch(AppDataActions.createNote({ applicationId: id, input }));
     });
   }
 
@@ -353,7 +353,7 @@ export class BrListComponent implements OnInit, OnDestroy {
   openSnapshots(): void {
     const conn = this.active();
     if (!conn) return;
-    const data: SnapshotManagerDialogData = { connectionId: conn.id, connectionName: conn.name };
+    const data: SnapshotManagerDialogData = { applicationId: conn.id, applicationName: conn.name };
     this.dialog.open(SnapshotManagerDialogComponent, { data });
   }
 
@@ -392,7 +392,7 @@ export class BrListComponent implements OnInit, OnDestroy {
    * leaving it ungrouped we create a fresh epic and move it there.
    */
   private persistOrder(spawnRuleId: string | null): void {
-    const id = this.connId();
+    const id = this.appId();
     if (!id) return;
     let order = 0;
     for (const list of this.lists()) {
@@ -400,14 +400,14 @@ export class BrListComponent implements OnInit, OnDestroy {
         order++;
         if (r.creationIndex === spawnRuleId) {
           this.store.dispatch(AppDataActions.moveRuleToNewEpic({
-            connectionId: id, ruleId: r.creationIndex,
+            applicationId: id, ruleId: r.creationIndex,
             input: ruleToInput(r, { executionOrder: order }), epicTitle: 'New Epic',
           }));
           continue;
         }
         if (r.executionOrder !== order || r.epicId !== list.epicId) {
           this.store.dispatch(AppDataActions.updateRule({
-            connectionId: id, ruleId: r.creationIndex, input: ruleToInput(r, { executionOrder: order, epicId: list.epicId }),
+            applicationId: id, ruleId: r.creationIndex, input: ruleToInput(r, { executionOrder: order, epicId: list.epicId }),
           }));
         }
       }

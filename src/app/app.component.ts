@@ -5,8 +5,8 @@ import { Subscription, filter, take, distinctUntilChanged } from 'rxjs';
 import { selectPanels } from './store/layout/layout.selectors';
 import { LayoutActions } from './store/layout/layout.actions';
 import { LayoutsActions } from './store/layouts/layouts.actions';
-import { ConnectionsActions } from './store/connections/connections.actions';
-import { selectActiveId } from './store/connections/connections.selectors';
+import { ApplicationsActions } from './store/applications/applications.actions';
+import { selectActiveId } from './store/applications/applications.selectors';
 import { ToolbarComponent } from './components/toolbar/toolbar.component';
 import { PanelGridComponent } from './components/panel-grid/panel-grid.component';
 import { AddPanelDialogComponent } from './components/add-panel-dialog/add-panel-dialog.component';
@@ -16,7 +16,6 @@ import { TechnicalSpecsComponent } from './components/views/technical-specs/tech
 import { NotesListComponent } from './components/views/notes-list/notes-list.component';
 import { ActivityFeedComponent } from './components/views/activity-feed/activity-feed.component';
 import { TerminalComponent } from './components/views/terminal/terminal.component';
-import { ClaudeSessionsComponent } from './components/views/claude-sessions/claude-sessions.component';
 import { GitHistoryComponent } from './components/views/git-history/git-history.component';
 import { MethodologyEditorComponent } from './components/views/methodology-editor/methodology-editor.component';
 import { Panel, ViewType } from './models/panel.model';
@@ -32,7 +31,7 @@ function newId(): string {
   imports: [
     MatDialogModule, ToolbarComponent, PanelGridComponent,
     BrListComponent, BrDiagramComponent, TechnicalSpecsComponent, NotesListComponent, ActivityFeedComponent,
-    TerminalComponent, ClaudeSessionsComponent, GitHistoryComponent,
+    TerminalComponent, GitHistoryComponent,
     MethodologyEditorComponent,
   ],
   template: `
@@ -47,7 +46,6 @@ function newId(): string {
           @case ('activity') { <app-activity-feed></app-activity-feed> }
           @case ('features') { <app-panel-grid></app-panel-grid> }
           @case ('terminal') { <app-terminal></app-terminal> }
-          @case ('claude-sessions') { <app-claude-sessions></app-claude-sessions> }
           @case ('git') { <app-git-history></app-git-history> }
           @case ('settings') { <app-methodology-editor></app-methodology-editor> }
         }
@@ -64,17 +62,17 @@ export class AppComponent implements OnInit, OnDestroy {
   private dialog = inject(MatDialog);
   private subs: Subscription[] = [];
 
-  // Active page lives in WorkspaceService so other views (e.g. Claude Sessions'
+  // Active page lives in WorkspaceService so other views (e.g. the Terminal's
   // Attach) can navigate; the toolbar still drives it via (navigate)="page.set(…)".
   page = inject(WorkspaceService).page;
 
   ngOnInit(): void {
-    // A "project" is the active database connection, chosen in the toolbar's
-    // connection selector — there is no filesystem project root any more.
-    this.store.dispatch(ConnectionsActions.loadConnections());
+    // A "project" is the active application, chosen in the toolbar's
+    // applications manager — there is no filesystem project root any more.
+    this.store.dispatch(ApplicationsActions.loadApplications());
     this.store.dispatch(LayoutsActions.loadLayouts());
 
-    // Selecting a database makes the Business Rules its main page.
+    // Selecting an application makes the Business Rules its main page.
     this.subs.push(
       this.store.select(selectActiveId).pipe(distinctUntilChanged()).subscribe((id) => {
         if (id) this.page.set('br-list');

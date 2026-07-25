@@ -16,7 +16,7 @@ import {
 import { TechnicalSpecsActions } from '../../../store/technical-specs/technical-specs.actions';
 import { selectSpecByRuleId } from '../../../store/technical-specs/technical-specs.selectors';
 import { selectAppRules } from '../../../store/app-data/app-data.selectors';
-import { selectActiveConnection } from '../../../store/connections/connections.selectors';
+import { selectActiveApplication } from '../../../store/applications/applications.selectors';
 import { WorkspaceService } from '../../../services/workspace.service';
 
 // The Tech Specs page shows the FULL technical specification of exactly ONE
@@ -213,7 +213,7 @@ export class TechnicalSpecsComponent {
 
   private rules = toSignal(this.store.select(selectAppRules), { initialValue: [] as AppBusinessRule[] });
   private specByRule = toSignal(this.store.select(selectSpecByRuleId), { initialValue: {} as Record<string, TechnicalSpec> });
-  active = toSignal(this.store.select(selectActiveConnection), { initialValue: null });
+  active = toSignal(this.store.select(selectActiveApplication), { initialValue: null });
 
   private selectedId = this.workspace.techSpecBrId;
   rule = computed(() => this.rules().find((r) => r.creationIndex === this.selectedId()) ?? null);

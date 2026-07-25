@@ -5,8 +5,8 @@ import { MatSnackBar } from '@angular/material/snack-bar';
 import { switchMap, mergeMap, map, catchError, tap, withLatestFrom } from 'rxjs/operators';
 import { of } from 'rxjs';
 import { TechnicalSpecsActions } from './technical-specs.actions';
-import { ConnectionsActions } from '../connections/connections.actions';
-import { selectActiveId } from '../connections/connections.selectors';
+import { ApplicationsActions } from '../applications/applications.actions';
+import { selectActiveId } from '../applications/applications.selectors';
 import { DbService } from '../../services/db.service';
 
 @Injectable()
@@ -19,7 +19,7 @@ export class TechnicalSpecsEffects {
   // When the active connection changes, (re)load its technical specs.
   reloadOnActiveChange$ = createEffect(() =>
     this.actions$.pipe(
-      ofType(ConnectionsActions.setActiveSuccess, ConnectionsActions.loadConnectionsSuccess),
+      ofType(ApplicationsActions.setActiveSuccess, ApplicationsActions.loadApplicationsSuccess),
       withLatestFrom(this.store.select(selectActiveId)),
       map(([, activeId]) => (activeId ? TechnicalSpecsActions.load({ connectionId: activeId }) : TechnicalSpecsActions.clear())),
     ),

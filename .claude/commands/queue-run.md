@@ -80,6 +80,9 @@ As each agent returns:
   git -C "$wt" worktree remove "$ROOT/handle-queue-$STAMP-<s>"
   git -C "$wt" branch -d "handle-queue/$STAMP/<s>"
   ```
+  > **FIXED RULE — never delete the `main` or `test` worktree.** Only ever remove the
+  > dated `handle-queue-*` worktrees this command created. Never `git worktree remove`,
+  > prune, or `rm -rf` the `main` or `test` worktree, under any circumstances.
   If the merge conflicts (footprints overlapped despite the plan), resolve conservatively or, if non-trivial, mark the task **blocked** and abort the merge (`git -C "$wt" merge --abort`), leaving the sub-worktree for inspection.
 - **Blocked / returned a question** → do not merge. Keep the sub-worktree, record the question (Step 3), leave the task file in place.
 
