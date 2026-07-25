@@ -31,7 +31,7 @@
             "type": "command",
             "shell": "bash",
             "statusMessage": "Signalling session-finished badge…",
-            "command": "if [ -n \"$TMUX\" ]; then s=$(tmux display-message -p '#S' 2>/dev/null); a=$(tmux display-message -p '#{session_attached}' 2>/dev/null); if [ -n \"$s\" ] && [ \"${a:-0}\" = \"0\" ]; then curl -s -o /dev/null --max-time 2 -X POST http://localhost:3001/api/session-finished --data-urlencode \"session=$s\" || true; fi; fi"
+            "command": "if [ -n \"$TMUX\" ]; then s=$(tmux display-message -p '#S' 2>/dev/null); [ -n \"$s\" ] && curl -s -o /dev/null --max-time 2 -X POST http://localhost:3001/api/session-finished --data-urlencode \"session=$s\" || true; fi"
           }
         ]
       }
