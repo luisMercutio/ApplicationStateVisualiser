@@ -115,6 +115,9 @@ export class TerminalComponent implements AfterViewInit, OnDestroy {
   private ws?: WebSocket;
   private resizeObserver?: ResizeObserver;
   private disposed = false;
+  // The session we've registered as attached with SessionActivityService, so we can
+  // release it exactly once when switching sessions or tearing the panel down.
+  private attachedSession = '';
 
   // xterm is ~250 kB and CommonJS; load it lazily so it stays out of the initial
   // bundle and only downloads when a terminal panel is actually opened.
@@ -203,8 +206,10 @@ export class TerminalComponent implements AfterViewInit, OnDestroy {
   private connect(session: string): void {
     if (!this.term) return;
     this.teardownSocket();
-    // Attaching to a session counts as "seen" — clear any finished badge on it.
-    this.sessionActivity.markOpened(session);
+    // Attaching to a session counts as "seen": clear any finished badge and register
+    // it as attached so finishes arriving while we watch it raise no new badge.
+    this.sessionActivity.attach(session);
+    this.attachedSession = session;
     this.session.set(session);
     this.status.set('connecting');
     this.statusText.set(`Connecting to ${session}…`);
@@ -265,6 +270,12 @@ export class TerminalComponent implements AfterViewInit, OnDestroy {
   }
 
   private teardownSocket(): void {
+    // Release the attachment first, whether or not a socket is open, so finishes for
+    // this session badge normally once we're no longer viewing it.
+    if (this.attachedSession) {
+      this.sessionActivity.detach(this.attachedSession);
+      this.attachedSession = '';
+    }
     if (!this.ws) return;
     const ws = this.ws;
     this.ws = undefined;

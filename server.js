@@ -43,6 +43,9 @@ function clampInt(value, fallback, min, max) {
 
 app.use(cors());
 app.use(express.json());
+// Also accept form-encoded bodies so a shell hook can POST with a plain
+// `--data-urlencode` (see /api/session-finished) without hand-building JSON.
+app.use(express.urlencoded({ extended: false }));
 
 app.get('/api/ping', (_req, res) => res.json({ ok: true }));
 
@@ -1102,6 +1105,22 @@ function broadcastActivity(msg) {
     if (ws.readyState === ws.OPEN) ws.send(frame);
   }
 }
+
+// Exact "a tmux session finished a Claude turn" signal, posted by the Stop hook
+// running *inside* that tmux session (it knows `tmux display-message -p '#S'`).
+// Unlike the ntfy feed — which names runs by directory and needs fuzzy matching —
+// this carries the picker's session name verbatim, so the client flags it directly.
+// Deliberately NOT pushed to activityBuffer: it's a badge signal, not an Activity
+// feed entry, and must not appear on the Activity page or be replayed as backlog.
+app.post('/api/session-finished', (req, res) => {
+  const session = String((req.body && req.body.session) || '').trim();
+  if (!session) return res.status(400).json({ error: 'session required' });
+  const frame = JSON.stringify({ type: 'session-finished', session });
+  for (const ws of activityClients) {
+    if (ws.readyState === ws.OPEN) ws.send(frame);
+  }
+  res.json({ ok: true });
+});
 
 function scheduleNtfyReconnect() {
   if (ntfyReconnectTimer) return; // already pending — don't stack reconnects
