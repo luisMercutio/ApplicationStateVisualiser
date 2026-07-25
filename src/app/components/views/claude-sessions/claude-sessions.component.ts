@@ -3,16 +3,18 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { MatMenuModule } from '@angular/material/menu';
+import { MatBadgeModule } from '@angular/material/badge';
 import { MatDialog } from '@angular/material/dialog';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { Store } from '@ngrx/store';
 import { Subscription, timer } from 'rxjs';
 import { switchMap } from 'rxjs/operators';
 import { FileService } from '../../../services/file.service';
-import { ClaudeSession, AppBusinessRule } from '../../../models/app-data.model';
+import { ClaudeSession, AppBusinessRule, RepoSession } from '../../../models/app-data.model';
 import { selectAppRules } from '../../../store/app-data/app-data.selectors';
 import { ClaudeConversationDialogComponent } from './claude-conversation-dialog.component';
 import { WorkspaceService } from '../../../services/workspace.service';
+import { SessionActivityService } from '../../../services/session-activity.service';
 
 // Mirror server.js brSlug so a rule name maps deterministically to its tmux
 // session (`claude-<slug>`) and branch (`claude/<slug>`). This is how the page
@@ -41,7 +43,7 @@ interface Row {
 @Component({
   selector: 'app-claude-sessions',
   standalone: true,
-  imports: [MatIconModule, MatButtonModule, MatTooltipModule, MatMenuModule],
+  imports: [MatIconModule, MatButtonModule, MatTooltipModule, MatMenuModule, MatBadgeModule],
   template: `
     <div class="cs-root">
       <div class="cs-toolbar">
@@ -51,6 +53,9 @@ interface Row {
         <button mat-icon-button class="sm" matTooltip="Refresh" (click)="refresh()"><mat-icon>refresh</mat-icon></button>
       </div>
 
+      <!-- Top pane: per-BR "Submit with Claude" sessions. Its height is user-draggable
+           via the divider below; the bottom pane (Repository sessions) takes the rest. -->
+      <div class="cs-pane" [style.height.px]="topHeight()">
       @if (error(); as e) { <div class="msg err">{{ e }}</div> }
 
       @if (!rows().length) {
@@ -65,6 +70,9 @@ interface Row {
                 <div class="cs-sub"><span class="mono">{{ row.session }}</span> · <span class="mono">{{ row.branch }}</span></div>
               </div>
               <span class="state" [class.on]="row.running">{{ row.running ? 'running' : 'dead' }}</span>
+              @if (sessionActivity.isUnread(row.session)) {
+                <span class="finished" matTooltip="Finished a turn since you last opened it">done</span>
+              }
               @if (row.running) {
                 <button mat-stroked-button class="attach" (click)="attach(row.session)">
                   <mat-icon>open_in_new</mat-icon> Attach
@@ -98,6 +106,45 @@ interface Row {
           }
         </div>
       }
+      </div>
+
+      <div class="cs-divider" (mousedown)="startDrag($event)" matTooltip="Drag to resize the two lists"><span class="grip"></span></div>
+
+      <!-- Bottom pane: every Claude session that ran in this repo (mirrored to
+           .claude/conversations/ by the Stop/SessionEnd hook). These survive closing the
+           tmux window: view the saved conversation, or resume it (claude --resume). -->
+      <div class="cs-pane grow">
+      <div class="cs-subhead">
+        <span class="title">Repository sessions</span>
+        <span class="count">{{ repoSessions().length }}</span>
+        <span class="spacer"></span>
+        <button mat-icon-button class="sm" matTooltip="Refresh saved sessions" (click)="refreshRepo()"><mat-icon>refresh</mat-icon></button>
+      </div>
+      @if (repoError(); as e) { <div class="msg err">{{ e }}</div> }
+      @if (!repoSessions().length) {
+        <div class="msg">No saved sessions yet. Any Claude session run in this repo is saved here when it ends, so you can reload it after closing tmux.</div>
+      } @else {
+        <div class="cs-list">
+          @for (rs of repoSessions(); track rs.id) {
+            <div class="cs-row">
+              <mat-icon class="dot off">history</mat-icon>
+              <div class="cs-body">
+                <div class="cs-br">{{ rs.title || '(untitled session)' }}</div>
+                <div class="cs-sub">
+                  <span class="mono">{{ rs.id.slice(0, 8) }}</span>@if (rs.gitBranch) { · <span class="mono">{{ rs.gitBranch }}</span> } · {{ rs.turns }} turns · {{ when(rs.lastAt || rs.savedAt) }}
+                </div>
+              </div>
+              <button mat-stroked-button class="attach" (click)="viewRepo(rs)">
+                <mat-icon>forum</mat-icon> View
+              </button>
+              <button mat-stroked-button class="attach" (click)="resumeRepo(rs)" [disabled]="busy() === repoKey(rs)">
+                <mat-icon>{{ busy() === repoKey(rs) ? 'hourglass_empty' : 'play_arrow' }}</mat-icon> Resume
+              </button>
+            </div>
+          }
+        </div>
+      }
+      </div>
     </div>
   `,
   styles: [`
@@ -105,9 +152,22 @@ interface Row {
     .cs-toolbar { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-bottom: 1px solid #e6e6e6; font-size: 13px; }
     .cs-toolbar .title { font-weight: 600; color: #333; }
     .cs-toolbar .count { color: #999; font-size: 12px; }
+    .cs-subhead { display: flex; align-items: center; gap: 8px; padding: 6px 10px 2px; margin-top: 4px;
+                  border-top: 1px solid #ececec; font-size: 13px; }
+    .cs-subhead .title { font-weight: 600; color: #333; } .cs-subhead .count { color: #999; font-size: 12px; }
     .spacer { flex: 1; } .sm { width: 30px; height: 30px; line-height: 30px; } .sm mat-icon { font-size: 18px; width: 18px; height: 18px; }
     .msg { padding: 20px; color: #999; text-align: center; } .msg.err { color: #c62828; }
-    .cs-list { padding: 8px; overflow-y: auto; }
+    /* Two stacked panes with a draggable divider. The top pane's height is set inline
+       (topHeight); the bottom pane grows to fill the rest. Each pane clips, and its
+       .cs-list scrolls inside it. */
+    .cs-pane { display: flex; flex-direction: column; flex: 0 0 auto; min-height: 0; overflow: hidden; }
+    .cs-pane.grow { flex: 1 1 auto; }
+    .cs-divider { flex: 0 0 9px; height: 9px; cursor: row-resize; display: flex; align-items: center;
+                  justify-content: center; background: #f0f0f2; border-top: 1px solid #e2e2e6;
+                  border-bottom: 1px solid #e2e2e6; }
+    .cs-divider:hover { background: #e4e4ea; }
+    .cs-divider .grip { width: 44px; height: 3px; border-radius: 2px; background: #bcbcc4; }
+    .cs-list { padding: 8px; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
     .cs-row { display: flex; align-items: center; gap: 10px; background: white; border: 1px solid #dcdfe4;
               border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
     .dot { font-size: 12px; width: 12px; height: 12px; flex-shrink: 0; }
@@ -117,6 +177,8 @@ interface Row {
     .cs-sub { font-size: 11px; color: #999; } .mono { font-family: monospace; }
     .state { font-size: 10px; color: #9e9e9e; text-transform: uppercase; letter-spacing: 0.04em; }
     .state.on { color: #2e7d32; }
+    .finished { font-size: 10px; font-weight: 600; color: white; background: #f44336; text-transform: uppercase;
+                letter-spacing: 0.04em; padding: 1px 7px; border-radius: 10px; flex-shrink: 0; }
     .attach { font-size: 12px; } .attach mat-icon { font-size: 15px; width: 15px; height: 15px; margin-right: 2px; }
     .kill { color: #c62828; }
   `],
@@ -127,12 +189,23 @@ export class ClaudeSessionsComponent implements OnInit, OnDestroy {
   private dialog = inject(MatDialog);
   private snack = inject(MatSnackBar);
   private workspace = inject(WorkspaceService);
+  protected sessionActivity = inject(SessionActivityService);
   private subs: Subscription[] = [];
 
   private rules = signal<AppBusinessRule[]>([]);
   private sessions = signal<ClaudeSession[]>([]);
-  busy = signal<string>('');   // session currently being reopened or killed
+  busy = signal<string>('');   // session currently being reopened, killed or resumed
   error = signal<string | null>(null);
+
+  // Every saved session for this repo (independent of BRs / live tmux).
+  repoSessions = signal<RepoSession[]>([]);
+  repoError = signal<string | null>(null);
+
+  // Height (px) of the top pane; the divider drags it, the bottom pane fills the rest.
+  topHeight = signal<number>(260);
+  private dragStartY = 0;
+  private dragStartH = 0;
+  private dragMax = Number.MAX_SAFE_INTEGER;
 
   rows = computed<Row[]>(() => {
     const rules = this.rules();
@@ -176,9 +249,37 @@ export class ClaudeSessionsComponent implements OnInit, OnDestroy {
         error: err => this.error.set(err?.error?.error ?? err?.message ?? 'Cannot reach server'),
       }),
     );
+    this.refreshRepo();   // load saved repo sessions once (refreshable via the button)
   }
 
-  ngOnDestroy(): void { this.subs.forEach(s => s.unsubscribe()); }
+  ngOnDestroy(): void { this.subs.forEach(s => s.unsubscribe()); this.endDrag(); }
+
+  // Resize the two panes by dragging the divider. Listeners live on document during the
+  // drag so it keeps tracking even if the pointer leaves the thin divider.
+  startDrag(e: MouseEvent): void {
+    e.preventDefault();
+    const root = (e.currentTarget as HTMLElement).parentElement;
+    // Leave headroom for the toolbar + a usable bottom pane so neither can collapse away.
+    this.dragMax = root ? Math.max(80, root.clientHeight - 140) : Number.MAX_SAFE_INTEGER;
+    this.dragStartY = e.clientY;
+    this.dragStartH = this.topHeight();
+    document.addEventListener('mousemove', this.onDragMove);
+    document.addEventListener('mouseup', this.endDrag);
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'row-resize';
+  }
+
+  private onDragMove = (e: MouseEvent): void => {
+    const next = this.dragStartH + (e.clientY - this.dragStartY);
+    this.topHeight.set(Math.max(80, Math.min(this.dragMax, next)));
+  };
+
+  private endDrag = (): void => {
+    document.removeEventListener('mousemove', this.onDragMove);
+    document.removeEventListener('mouseup', this.endDrag);
+    document.body.style.userSelect = '';
+    document.body.style.cursor = '';
+  };
 
   refresh(): void {
     this.file.getClaudeSessions().subscribe({
@@ -188,7 +289,11 @@ export class ClaudeSessionsComponent implements OnInit, OnDestroy {
   }
 
   // Open the Terminal page attached to this session (handoff via WorkspaceService).
-  attach(session: string): void { this.workspace.openTerminal(session); }
+  // Opening it clears any "finished a turn" badge on the session.
+  attach(session: string): void {
+    this.sessionActivity.markOpened(session);
+    this.workspace.openTerminal(session);
+  }
 
   // Kill a running session's tmux session. The worktree and archived conversation
   // survive, so it can be reopened later; confirm first to avoid losing a live turn.
@@ -271,6 +376,53 @@ export class ClaudeSessionsComponent implements OnInit, OnDestroy {
         this.snack.open(err?.error?.error ?? err?.message ?? 'Delete failed', 'Dismiss', { duration: 6000 });
       },
     });
+  }
+
+  // ── Repository sessions (any saved session, keyed by UUID) ──
+  private repoKeyPrefix = 'repo:';
+  repoKey(rs: RepoSession): string { return this.repoKeyPrefix + rs.id; }
+
+  refreshRepo(): void {
+    this.file.getRepoSessions().subscribe({
+      next: s => { this.repoSessions.set(s); this.repoError.set(null); },
+      error: err => this.repoError.set(err?.error?.error ?? err?.message ?? 'Cannot load saved sessions'),
+    });
+  }
+
+  // Open the saved conversation (read-only) for any repo session, loaded by UUID.
+  viewRepo(rs: RepoSession): void {
+    this.dialog.open(ClaudeConversationDialogComponent, {
+      data: { session: rs.id.slice(0, 8), brName: rs.title, repoSessionId: rs.id },
+      width: '760px', maxWidth: '94vw', autoFocus: false,
+    });
+  }
+
+  // Resume a saved session (claude --resume <uuid>) in a fresh tmux window, then drop
+  // straight into it on the Terminal page.
+  resumeRepo(rs: RepoSession): void {
+    if (this.busy()) return;
+    this.busy.set(this.repoKey(rs));
+    this.file.resumeRepoSession(rs.id).subscribe({
+      next: r => {
+        this.busy.set('');
+        this.snack.open(r.mode === 'already-running'
+          ? `${r.session} is already running`
+          : `Resumed session ${rs.id.slice(0, 8)} — continuing where it left off`, 'OK', { duration: 5000 });
+        this.attach(r.session);
+      },
+      error: err => {
+        this.busy.set('');
+        this.snack.open(err?.error?.error ?? err?.message ?? 'Resume failed', 'Dismiss', { duration: 6000 });
+      },
+    });
+  }
+
+  // Compact local timestamp for a saved session row.
+  when(iso: string | null): string {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   }
 }
 

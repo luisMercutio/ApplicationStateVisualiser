@@ -67,6 +67,23 @@ export interface ClaudeSession {
   hasTranscript?: boolean;   // an archived transcript exists → conversation is viewable
 }
 
+// Any Claude session that ran in this repo — one row per saved transcript UUID,
+// mirrored into .claude/conversations/ by the Stop/SessionEnd hook. Unlike
+// ClaudeSession these aren't tied to a Business Rule or a live tmux session: they
+// survive closing the tmux window and can be viewed or resumed (claude --resume).
+export interface RepoSession {
+  id: string;                // session UUID (== claude --resume <id>)
+  prefix: string;            // source working-tree basename (repo name or BR slug)
+  file: string;              // <prefix>__<id>.jsonl in .claude/conversations/
+  title: string | null;     // first user prompt (or transcript summary)
+  turns: number;            // prompt/answer turn count
+  startedAt: string | null;  // first transcript timestamp
+  lastAt: string | null;     // last transcript timestamp
+  cwd: string | null;
+  gitBranch: string | null;
+  savedAt: string;           // transcript file mtime (ISO)
+}
+
 // One turn of a Claude conversation, reduced to prompt/answer only (thinking and
 // tool calls stripped) by the server from the archived transcript JSONL.
 export interface ConversationMessage {

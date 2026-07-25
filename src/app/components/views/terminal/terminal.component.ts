@@ -1,14 +1,17 @@
 import {
-  Component, ElementRef, OnDestroy, AfterViewInit, effect, inject, input, signal, viewChild,
+  Component, ElementRef, OnDestroy, AfterViewInit, computed, effect, inject, input, signal, viewChild,
 } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { MatTooltipModule } from '@angular/material/tooltip';
+import { MatMenuModule } from '@angular/material/menu';
+import { MatBadgeModule } from '@angular/material/badge';
 import type { Terminal as XTerm } from '@xterm/xterm';
 import type { FitAddon as XFitAddon } from '@xterm/addon-fit';
 import { FileService } from '../../../services/file.service';
 import { WorkspaceService } from '../../../services/workspace.service';
+import { SessionActivityService } from '../../../services/session-activity.service';
 
 type Status = 'connecting' | 'connected' | 'disconnected' | 'error';
 
@@ -22,7 +25,7 @@ const SESSION_NAME_RE = /^[A-Za-z0-9_.-]+$/;
 @Component({
   selector: 'app-terminal',
   standalone: true,
-  imports: [CommonModule, MatIconModule, MatButtonModule, MatTooltipModule],
+  imports: [CommonModule, MatIconModule, MatButtonModule, MatTooltipModule, MatMenuModule, MatBadgeModule],
   template: `
     <div class="term-wrapper">
       <div class="term-bar">
@@ -42,16 +45,30 @@ const SESSION_NAME_RE = /^[A-Za-z0-9_.-]+$/;
           </button>
           @if (addError()) { <span class="add-error">{{ addError() }}</span> }
         } @else {
-          <select class="session-select" [value]="session()"
-                  (change)="onSessionChange($event)"
-                  [disabled]="sessions().length === 0">
+          <!-- Session picker. A badge marks sessions that finished a Claude turn
+               since they were last opened; selecting a session clears its badge. -->
+          <button class="session-btn" [matMenuTriggerFor]="sessMenu"
+                  [disabled]="sessions().length === 0"
+                  [matBadge]="unreadHere()" [matBadgeHidden]="unreadHere() === 0"
+                  matBadgeColor="warn" matBadgeSize="small" matBadgeOverlap="false"
+                  matTooltip="Switch tmux session">
+            <span class="sess-name">{{ session() || (sessions().length ? 'select session' : 'no tmux sessions') }}</span>
+            <mat-icon class="caret">arrow_drop_down</mat-icon>
+          </button>
+          <mat-menu #sessMenu="matMenu">
             @for (s of sessions(); track s) {
-              <option [value]="s">{{ s }}</option>
+              <button mat-menu-item (click)="selectSession(s)">
+                <mat-icon>{{ s === session() ? 'check' : 'terminal' }}</mat-icon>
+                <span class="menu-sess">{{ s }}</span>
+                @if (sessionActivity.isUnread(s)) {
+                  <span class="unread-dot" matTooltip="Finished a turn since last opened"></span>
+                }
+              </button>
             }
             @if (sessions().length === 0) {
-              <option value="">no tmux sessions</option>
+              <button mat-menu-item disabled>no tmux sessions</button>
             }
-          </select>
+          </mat-menu>
           <button mat-icon-button class="bar-btn" matTooltip="New session by name"
                   (click)="startAdd()">
             <mat-icon>add</mat-icon>
@@ -79,11 +96,20 @@ const SESSION_NAME_RE = /^[A-Za-z0-9_.-]+$/;
     .dot.connecting { color: #ffb300; }
     .dot.disconnected { color: #9e9e9e; }
     .dot.error { color: #ff5252; }
-    .session-select { background: #1e1e1e; color: #ddd; border: 1px solid #444; border-radius: 4px; padding: 2px 6px; font-size: 12px; max-width: 220px; }
     .session-input { background: #1e1e1e; color: #ddd; border: 1px solid #444; border-radius: 4px; padding: 2px 6px; font-size: 12px; width: 180px; outline: none; }
     .session-input:focus { border-color: #4caf50; }
     .session-input.invalid { border-color: #ff5252; }
     .add-error { color: #ff8a80; font-size: 11px; white-space: nowrap; }
+    .session-btn { display: inline-flex; align-items: center; gap: 2px; background: #1e1e1e; color: #ddd;
+                   border: 1px solid #444; border-radius: 4px; padding: 2px 4px 2px 8px; font-size: 12px;
+                   max-width: 240px; cursor: pointer; height: 24px; }
+    .session-btn:hover:not([disabled]) { border-color: #666; }
+    .session-btn[disabled] { opacity: 0.6; cursor: default; }
+    .session-btn .sess-name { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .session-btn .caret { font-size: 18px; width: 18px; height: 18px; }
+    .menu-sess { flex: 1; }
+    .unread-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #f44336;
+                  margin-left: 8px; flex-shrink: 0; }
     .status-text { color: #9e9e9e; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .spacer { flex: 1; }
     .bar-btn { width: 28px; height: 28px; line-height: 28px; color: #bbb; }
@@ -95,8 +121,13 @@ const SESSION_NAME_RE = /^[A-Za-z0-9_.-]+$/;
 export class TerminalComponent implements AfterViewInit, OnDestroy {
   private fileService = inject(FileService);
   private workspace = inject(WorkspaceService);
+  protected sessionActivity = inject(SessionActivityService);
   private host = viewChild.required<ElementRef<HTMLDivElement>>('host');
   private nameInput = viewChild<ElementRef<HTMLInputElement>>('nameInput');
+
+  // How many of the sessions currently in the picker have an unseen finish —
+  // drives the small badge on the picker button.
+  unreadHere = computed(() => this.sessions().filter(s => this.sessionActivity.isUnread(s)).length);
 
   // When set (e.g. by embedding the component with a binding), attach to this
   // session on init instead of auto-selecting the default tmux session. When hosted
@@ -197,9 +228,11 @@ export class TerminalComponent implements AfterViewInit, OnDestroy {
     });
   }
 
-  onSessionChange(event: Event): void {
-    const value = (event.target as HTMLSelectElement).value;
-    if (value && value !== this.session()) this.connect(value);
+  selectSession(session: string): void {
+    if (!session) return;
+    // Clear the badge as soon as it's picked, then attach (no-op if already on it).
+    this.sessionActivity.markOpened(session);
+    if (session !== this.session()) this.connect(session);
   }
 
   startAdd(): void {
@@ -245,6 +278,8 @@ export class TerminalComponent implements AfterViewInit, OnDestroy {
   private connect(session: string): void {
     if (!this.term) return;
     this.teardownSocket();
+    // Attaching to a session counts as "seen" — clear any finished badge on it.
+    this.sessionActivity.markOpened(session);
     this.session.set(session);
     this.status.set('connecting');
     this.statusText.set(`Connecting to ${session}…`);

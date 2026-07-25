@@ -1,4 +1,5 @@
 import { Component, OnInit, inject, signal } from '@angular/core';
+import { map } from 'rxjs/operators';
 import { MatDialogModule, MAT_DIALOG_DATA, MatDialogRef } from '@angular/material/dialog';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
@@ -7,8 +8,9 @@ import { FileService } from '../../../services/file.service';
 import { ConversationMessage } from '../../../models/app-data.model';
 
 export interface ConversationDialogData {
-  session: string;
+  session: string;             // display label + per-BR fetch key
   brName: string | null;
+  repoSessionId?: string;      // when set, load a repo session by UUID instead
 }
 
 // Read-only view of a session's archived conversation, prompt/answer only (the
@@ -72,8 +74,12 @@ export class ClaudeConversationDialogComponent implements OnInit {
   messages = signal<ConversationMessage[]>([]);
 
   ngOnInit(): void {
-    this.file.getClaudeConversation(this.data.session).subscribe({
-      next: r => { this.messages.set(r.messages); this.loading.set(false); },
+    // A repo session is fetched by UUID; a per-BR session by its claude-<slug> name.
+    const load$ = this.data.repoSessionId
+      ? this.file.getRepoSessionConversation(this.data.repoSessionId).pipe(map(r => r.messages))
+      : this.file.getClaudeConversation(this.data.session).pipe(map(r => r.messages));
+    load$.subscribe({
+      next: messages => { this.messages.set(messages); this.loading.set(false); },
       error: err => { this.error.set(err?.error?.error ?? err?.message ?? 'Cannot load conversation'); this.loading.set(false); },
     });
   }
