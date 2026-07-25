@@ -4,6 +4,10 @@ import { Observable } from 'rxjs';
 import { Application, ApplicationInput, DbStoreStatus } from '../models/application.model';
 import { AppBusinessRule, AppBusinessRuleInput, BrAgentInfo, BrAgentInfoInput, BrSnapshot, BrSnapshotInput, BrSnapshotMeta, Epic, EpicInput } from '../models/app-data.model';
 import { Note, NoteInput } from '../models/note.model';
+import {
+  TechnicalSpec, TechnicalSpecArtifact, TechnicalSpecArtifactInput,
+  TechnicalSpecEntry, TechnicalSpecEntryInput, TechnicalSpecInput,
+} from '../models/technical-spec.model';
 import { MethodologyFile, MethodologyFileMeta, MethodologyKind } from '../models/methodology-file.model';
 
 // Mirror FileService's host derivation so the DB API works over localhost and
@@ -142,7 +146,48 @@ export class DbService {
     return this.http.delete<{ ok: boolean }>(`${API_BASE}/api/applications/${appId}/br-snapshots/${snapId}`);
   }
 
-  // ── Methodology files (agents + commands, served from .claude/ on disk) ──
+  // ── Technical specifications (per-BR implementation spec + children) ──
+  listTechnicalSpecs(id: string): Observable<{ specs: TechnicalSpec[] }> {
+    return this.http.get<{ specs: TechnicalSpec[] }>(`${API_BASE}/api/applications/${id}/technical-specs`);
+  }
+
+  createTechnicalSpec(id: string, input: TechnicalSpecInput): Observable<TechnicalSpec> {
+    return this.http.post<TechnicalSpec>(`${API_BASE}/api/applications/${id}/technical-specs`, input);
+  }
+
+  updateTechnicalSpec(id: string, specId: string, input: TechnicalSpecInput): Observable<TechnicalSpec> {
+    return this.http.put<TechnicalSpec>(`${API_BASE}/api/applications/${id}/technical-specs/${specId}`, input);
+  }
+
+  deleteTechnicalSpec(id: string, specId: string): Observable<{ ok: boolean }> {
+    return this.http.delete<{ ok: boolean }>(`${API_BASE}/api/applications/${id}/technical-specs/${specId}`);
+  }
+
+  createSpecEntry(id: string, specId: string, input: TechnicalSpecEntryInput): Observable<TechnicalSpecEntry> {
+    return this.http.post<TechnicalSpecEntry>(`${API_BASE}/api/applications/${id}/technical-specs/${specId}/entries`, input);
+  }
+
+  updateSpecEntry(id: string, specId: string, entryId: string, input: TechnicalSpecEntryInput): Observable<TechnicalSpecEntry> {
+    return this.http.put<TechnicalSpecEntry>(`${API_BASE}/api/applications/${id}/technical-specs/${specId}/entries/${entryId}`, input);
+  }
+
+  deleteSpecEntry(id: string, specId: string, entryId: string): Observable<{ ok: boolean }> {
+    return this.http.delete<{ ok: boolean }>(`${API_BASE}/api/applications/${id}/technical-specs/${specId}/entries/${entryId}`);
+  }
+
+  createSpecArtifact(id: string, specId: string, input: TechnicalSpecArtifactInput): Observable<TechnicalSpecArtifact> {
+    return this.http.post<TechnicalSpecArtifact>(`${API_BASE}/api/applications/${id}/technical-specs/${specId}/artifacts`, input);
+  }
+
+  updateSpecArtifact(id: string, specId: string, artifactId: string, input: TechnicalSpecArtifactInput): Observable<TechnicalSpecArtifact> {
+    return this.http.put<TechnicalSpecArtifact>(`${API_BASE}/api/applications/${id}/technical-specs/${specId}/artifacts/${artifactId}`, input);
+  }
+
+  deleteSpecArtifact(id: string, specId: string, artifactId: string): Observable<{ ok: boolean }> {
+    return this.http.delete<{ ok: boolean }>(`${API_BASE}/api/applications/${id}/technical-specs/${specId}/artifacts/${artifactId}`);
+  }
+
+  // ── Methodology files (master DB: agents + commands) ──
   listMethodology(): Observable<{ files: MethodologyFileMeta[] }> {
     return this.http.get<{ files: MethodologyFileMeta[] }>(`${API_BASE}/api/methodology`);
   }

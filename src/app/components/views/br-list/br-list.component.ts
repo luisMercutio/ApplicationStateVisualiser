@@ -15,12 +15,14 @@ import { categoryColor } from '../../../models/business-rule.model';
 import { Application } from '../../../models/application.model';
 import { AppDataActions } from '../../../store/app-data/app-data.actions';
 import { selectEpicsWithRules, selectAppDataLoading, selectAppDataError, selectAgentInfoCountByRule, selectNotes } from '../../../store/app-data/app-data.selectors';
+import { selectSpecEntryCountByRule } from '../../../store/technical-specs/technical-specs.selectors';
 import { selectActiveApplication } from '../../../store/applications/applications.selectors';
 import { BrFormDialogComponent, BrFormData, BrFormResult } from '../../br-form-dialog/br-form-dialog.component';
 import { NoteFormDialogComponent, NoteDialogData } from '../../note-form-dialog/note-form-dialog.component';
 import { EpicFormDialogComponent } from '../../epic-form-dialog/epic-form-dialog.component';
 import { AgentInfoDialogComponent, AgentInfoDialogData } from '../../agent-info-dialog/agent-info-dialog.component';
 import { SnapshotManagerDialogComponent, SnapshotManagerDialogData } from '../../snapshot-manager-dialog/snapshot-manager-dialog.component';
+import { WorkspaceService } from '../../../services/workspace.service';
 
 interface RuleList {
   epicId: string | null;      // null = the ungrouped bucket
@@ -118,6 +120,14 @@ const UNGROUPED = 'ungrouped';
                         <mat-icon>psychology</mat-icon>
                         <span>Agent info@if (infoCounts()[r.creationIndex]) { ({{ infoCounts()[r.creationIndex] }})}</span>
                       </button>
+                      <button mat-menu-item (click)="openTechnicalSpec(r)">
+                        <mat-icon>description</mat-icon>
+                        <span>Technical spec@if (specCounts()[r.creationIndex]) { ({{ specCounts()[r.creationIndex] }})}</span>
+                      </button>
+                      <button mat-menu-item (click)="openBrDiagram(r)">
+                        <mat-icon>account_tree</mat-icon>
+                        <span>Diagram</span>
+                      </button>
                       <button mat-menu-item (click)="editNote(r)">
                         <mat-icon>{{ noteFor(r) ? 'sticky_note_2' : 'note_add' }}</mat-icon>
                         <span>{{ noteFor(r) ? 'Edit note' : 'Add note' }}</span>
@@ -149,6 +159,9 @@ const UNGROUPED = 'ungrouped';
     .xs mat-icon { font-size: 16px; width: 16px; height: 16px; }
     .row-menu { position: relative; color: #888; } .row-menu.has-info { color: #7b1fa2; }
     .info-badge { position: absolute; top: 0; right: 0; background: #7b1fa2; color: white; font-size: 9px;
+                  line-height: 1; padding: 1px 3px; border-radius: 8px; min-width: 8px; text-align: center; }
+    .spec-btn { position: relative; color: #bbb; } .spec-btn.has-spec { color: #00796b; }
+    .spec-badge { position: absolute; top: 0; right: 0; background: #00796b; color: white; font-size: 9px;
                   line-height: 1; padding: 1px 3px; border-radius: 8px; min-width: 8px; text-align: center; }
     .msg { padding: 24px; color: #999; text-align: center; } .msg.err { color: #c62828; }
     .msg .inline { font-size: 15px; vertical-align: middle; }
@@ -188,6 +201,7 @@ const UNGROUPED = 'ungrouped';
 export class BrListComponent implements OnInit, OnDestroy {
   private store = inject(Store);
   private dialog = inject(MatDialog);
+  private workspace = inject(WorkspaceService);
   private subs: Subscription[] = [];
 
   active = signal<Application | null>(null);
@@ -197,6 +211,7 @@ export class BrListComponent implements OnInit, OnDestroy {
   infoCounts = signal<Record<string, number>>({});
   // The single note bound to each BR, keyed by BR name (one note per BR).
   notesByBr = signal<Record<string, Note>>({});
+  specCounts = signal<Record<string, number>>({});
 
   private epics: Epic[] = [];
 
@@ -214,6 +229,7 @@ export class BrListComponent implements OnInit, OnDestroy {
         for (const n of notes) for (const ref of n.relatedBrs) byBr[ref] ??= n;
         this.notesByBr.set(byBr);
       }),
+      this.store.select(selectSpecEntryCountByRule).subscribe((c) => this.specCounts.set(c)),
       this.store.select(selectEpicsWithRules).subscribe(({ grouped, ungrouped }) => {
         this.epics = grouped.map((g) => g.epic);
         const lists: RuleList[] = grouped
@@ -339,6 +355,17 @@ export class BrListComponent implements OnInit, OnDestroy {
     if (!conn) return;
     const data: SnapshotManagerDialogData = { applicationId: conn.id, applicationName: conn.name };
     this.dialog.open(SnapshotManagerDialogComponent, { data });
+  }
+
+  // Route to the Tech Specs page with this BR selected (its full technical spec).
+  openTechnicalSpec(rule: AppBusinessRule): void {
+    this.workspace.openTechnicalSpec(rule.creationIndex);
+  }
+
+  // Navigate to the dedicated per-BR diagram view (renders the BR's technical
+  // spec — architecture contributions + artifacts — as a class diagram).
+  openBrDiagram(rule: AppBusinessRule): void {
+    this.workspace.openBrDiagram(rule.creationIndex);
   }
 
   // ── Drag reorder / move across epics ──

@@ -11,6 +11,8 @@ import { ToolbarComponent } from './components/toolbar/toolbar.component';
 import { PanelGridComponent } from './components/panel-grid/panel-grid.component';
 import { AddPanelDialogComponent } from './components/add-panel-dialog/add-panel-dialog.component';
 import { BrListComponent } from './components/views/br-list/br-list.component';
+import { BrDiagramComponent } from './components/views/br-diagram/br-diagram.component';
+import { TechnicalSpecsComponent } from './components/views/technical-specs/technical-specs.component';
 import { NotesListComponent } from './components/views/notes-list/notes-list.component';
 import { ActivityFeedComponent } from './components/views/activity-feed/activity-feed.component';
 import { TerminalComponent } from './components/views/terminal/terminal.component';
@@ -28,7 +30,7 @@ function newId(): string {
   standalone: true,
   imports: [
     MatDialogModule, ToolbarComponent, PanelGridComponent,
-    BrListComponent, NotesListComponent, ActivityFeedComponent,
+    BrListComponent, BrDiagramComponent, TechnicalSpecsComponent, NotesListComponent, ActivityFeedComponent,
     TerminalComponent, GitHistoryComponent,
     MethodologyEditorComponent,
   ],
@@ -38,6 +40,8 @@ function newId(): string {
       <div class="workspace">
         @switch (page()) {
           @case ('br-list') { <app-br-list></app-br-list> }
+          @case ('br-diagram') { <app-br-diagram></app-br-diagram> }
+          @case ('technical-specs') { <app-technical-specs></app-technical-specs> }
           @case ('notes') { <app-notes-list></app-notes-list> }
           @case ('activity') { <app-activity-feed></app-activity-feed> }
           @case ('features') { <app-panel-grid></app-panel-grid> }

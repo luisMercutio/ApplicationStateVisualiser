@@ -68,18 +68,33 @@ connection is set to the application being developed before running this command
 
 ---
 
+## Step 3.6 — Technical Specifications (per Business Rule)
+
+Separately from the cumulative Additional Agent Information above, each Business Rule may
+have its own **technical specification** in the active application DB — a per-BR parent
+holding implementation **entries** (authored by a `user` or an `agent`) and **artifacts**
+(previously generated file changes). Unlike agent-info, a technical spec is **scoped to
+one BR** and not cumulative across the chain. The developer agents load each BR's spec
+themselves at their **Step 0.6** via
+`curl -s "http://localhost:3001/api/db/active/technical-specs?brName=<BR-name>"`, treat its
+entries as authoritative implementation instructions for that rule, and **register each
+file they generate back as an artifact** under that BR's spec. Nothing to do here beyond
+ensuring the active connection is set (as in Step 3.5).
+
+---
+
 ## Step 4 — Round 1: Develop (parallel)
 
 Spawn the **backend-developer** and **frontend-developer** agents in a single parallel call.
 
 **backend-developer prompt:**
 ```
-Implement the backend for <EPIC-ID>. Read all inputs from <epic-folder>/. Use the diff files to scope your work to only what changed in this Epic. First complete your Step 0.5 (load Additional Agent Information), then follow your full implementation workflow (migrations → entities → DTOs → services → controllers → tests). Report: files created, migrations added, tests written, build status, test status.
+Implement the backend for <EPIC-ID>. Read all inputs from <epic-folder>/. Use the diff files to scope your work to only what changed in this Epic. First complete your Step 0.5 (load Additional Agent Information) and your Step 0.6 (load each BR's Technical Specification), then follow your full implementation workflow (migrations → entities → DTOs → services → controllers → tests). Report: files created, migrations added, tests written, build status, test status.
 ```
 
 **frontend-developer prompt:**
 ```
-Implement the frontend for <EPIC-ID>. Read all inputs from <epic-folder>/. Use the diff files to scope your work to only what changed in this Epic. First complete your Step 0.5 (load Additional Agent Information), then follow your full implementation workflow (models → actions → reducer → selectors → service → effects → guards → components → tests). Report: files created, tests written, build status, test status.
+Implement the frontend for <EPIC-ID>. Read all inputs from <epic-folder>/. Use the diff files to scope your work to only what changed in this Epic. First complete your Step 0.5 (load Additional Agent Information) and your Step 0.6 (load each BR's Technical Specification), then follow your full implementation workflow (models → actions → reducer → selectors → service → effects → guards → components → tests). Report: files created, tests written, build status, test status.
 ```
 
 Wait for both. If either agent reports a build failure or an unresolvable architectural ambiguity, stop and surface the error to the user. Do not proceed to testing until both sides build cleanly.
