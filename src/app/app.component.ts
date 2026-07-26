@@ -16,6 +16,7 @@ import { ActivityFeedComponent } from './components/views/activity-feed/activity
 import { TerminalComponent } from './components/views/terminal/terminal.component';
 import { ClaudeSessionsComponent } from './components/views/claude-sessions/claude-sessions.component';
 import { GitHistoryComponent } from './components/views/git-history/git-history.component';
+import { InstancesComponent } from './components/views/instances/instances.component';
 import { MethodologyEditorComponent } from './components/views/methodology-editor/methodology-editor.component';
 import { Panel, ViewType } from './models/panel.model';
 import { WorkspaceService } from './services/workspace.service';
@@ -31,7 +32,7 @@ function newId(): string {
     MatDialogModule, ToolbarComponent, PanelGridComponent,
     BrListComponent, NotesListComponent, ActivityFeedComponent,
     TerminalComponent, ClaudeSessionsComponent, GitHistoryComponent,
-    MethodologyEditorComponent,
+    InstancesComponent, MethodologyEditorComponent,
   ],
   template: `
     <div class="app-shell">
@@ -45,6 +46,7 @@ function newId(): string {
           @case ('terminal') { <app-terminal></app-terminal> }
           @case ('claude-sessions') { <app-claude-sessions></app-claude-sessions> }
           @case ('git') { <app-git-history></app-git-history> }
+          @case ('instances') { <app-instances></app-instances> }
           @case ('settings') { <app-methodology-editor></app-methodology-editor> }
         }
       </div>

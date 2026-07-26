@@ -5,11 +5,23 @@ import { map } from 'rxjs/operators';
 import { Panel } from '../models/panel.model';
 import { ClaudeSession, ConversationMessage, RepoSession } from '../models/app-data.model';
 import { GitCommit, GitWorktree } from '../models/git.model';
+import { AppInstance } from '../models/instance.model';
 
 // Derive the API host from the page's own host so the app works both on
 // localhost and when reached over the network (e.g. a phone on Tailscale
 // loading http://<tailscale-ip>:4201 → API at http://<tailscale-ip>:3001).
-const API_PORT = 3001;
+//
+// The API *port* is derived from the page's own web port so each worktree instance
+// talks to its OWN backend: dev-remote runs every instance with web = api + 1200
+// (base pair 4201/3001), so an instance opened on web :4202 reaches its own api
+// :3002, not the base API on 3001. Anything outside that scheme falls back to 3001.
+const API_OFFSET = 1200;
+const API_FALLBACK = 3001;
+function deriveApiPort(): number {
+  const web = typeof window !== 'undefined' ? parseInt(window.location?.port ?? '', 10) : NaN;
+  return Number.isFinite(web) && web - API_OFFSET >= API_FALLBACK ? web - API_OFFSET : API_FALLBACK;
+}
+const API_PORT = deriveApiPort();
 const API_BASE =
   typeof window !== 'undefined' && window.location?.hostname
     ? `${window.location.protocol}//${window.location.hostname}:${API_PORT}`
@@ -131,6 +143,28 @@ export class FileService {
     return this.http.get<{ commits: GitCommit[] }>(
       `${API_BASE}/api/git/log`, { params, headers: { 'Cache-Control': 'no-cache' } })
       .pipe(map(r => r.commits));
+  }
+
+  // ── Worktree instances (dev-remote start/stop/status per worktree) ──
+  // Every running (or once-running) instance dev-remote knows about, port-ordered.
+  getInstances(): Observable<AppInstance[]> {
+    return this.http.get<{ instances: AppInstance[] }>(
+      `${API_BASE}/api/instances`, { headers: { 'Cache-Control': 'no-cache' } })
+      .pipe(map(r => r.instances));
+  }
+
+  // Boot a worktree as its own instance on the next free port pair; the response's
+  // `instance` carries the ports it landed on (null if the script reported an error).
+  startInstance(worktree: string):
+    Observable<{ ok: boolean; stdout: string; stderr: string; instance: AppInstance | null }> {
+    return this.http.post<{ ok: boolean; stdout: string; stderr: string; instance: AppInstance | null }>(
+      `${API_BASE}/api/instances/${encodeURIComponent(worktree)}/start`, {});
+  }
+
+  // Stop a worktree's instance (kills the launcher process tree, clears its state).
+  stopInstance(worktree: string): Observable<{ ok: boolean; stdout: string; stderr: string }> {
+    return this.http.post<{ ok: boolean; stdout: string; stderr: string }>(
+      `${API_BASE}/api/instances/${encodeURIComponent(worktree)}/stop`, {});
   }
 
   // ── Saved panel layouts ──

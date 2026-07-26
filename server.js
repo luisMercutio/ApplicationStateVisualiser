@@ -859,6 +859,103 @@ app.get('/api/git/log', async (req, res) => {
   }
 });
 
+// ── Worktree instances (dev-remote start/stop/status per worktree) ────────────
+// Any git worktree can be booted as its own running app instance (Express API +
+// Angular dev server) on its own port pair, driven by the Windows helper script
+// ~/dev-remote.cmd (a thin wrapper over dev-remote.ps1). That script auto-allocates
+// the next free pair from web 4201 / api 3001 (web = api + 1200), skipping ports
+// already listening or reserved by another running worktree, and records per-worktree
+// state under ~/.dev-remote/<worktree>.json. This control panel is itself the base
+// instance (the `test` worktree on 4201); from here you pick a worktree and launch
+// the next session on 4202, 4203, … We shell to the .cmd on Windows (NOT via WSL —
+// the script is native PowerShell using Get-NetTCPConnection / Start-Process).
+const DEV_REMOTE_CMD = path.join(os.homedir(), 'dev-remote.cmd');
+const DEV_REMOTE_STATE_DIR = path.join(os.homedir(), '.dev-remote');
+// Worktree tokens are passed as a discrete argv to the script, but keep them to the
+// same safe shape the script itself allows so nothing surprising reaches cmd.exe.
+const WORKTREE_RE = /^[A-Za-z0-9._-]+$/;
+
+// Run `dev-remote.cmd <command> <worktree>` and capture its output. Resolves even on
+// a non-zero exit so the caller can surface the script's own message. The script
+// launches the dev servers detached and returns promptly, so this call does not block
+// for the lifetime of the instance.
+function runDevRemote(command, worktree) {
+  return new Promise((resolve) => {
+    execFile(
+      process.env.ComSpec || 'cmd.exe',
+      ['/c', DEV_REMOTE_CMD, command, worktree],
+      { windowsHide: true, timeout: 180000 },
+      (err, stdout, stderr) => resolve({
+        ok: !err,
+        stdout: (stdout || '').toString(),
+        stderr: (stderr || '').toString(),
+      }),
+    );
+  });
+}
+
+// Is a Windows pid still alive? `process.kill(pid, 0)` throws ESRCH when it isn't
+// (and EPERM when it exists but we may not signal it — still "alive").
+function pidAlive(pid) {
+  if (!pid) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (e) { return e.code === 'EPERM'; }
+}
+
+// Every worktree instance dev-remote knows about, from its ~/.dev-remote/*.json state
+// files, with liveness resolved from the recorded pid. A stale record (the process
+// died without a clean `stop`) is reported running:false so the UI shows it as stopped
+// rather than advertising a dead port.
+async function listInstances() {
+  let files;
+  try { files = await fs.readdir(DEV_REMOTE_STATE_DIR); }
+  catch { return []; }                    // no state dir yet → nothing running
+  const out = [];
+  for (const f of files) {
+    if (!f.endsWith('.json')) continue;
+    let st;
+    try { st = JSON.parse(await fs.readFile(path.join(DEV_REMOTE_STATE_DIR, f), 'utf8')); }
+    catch { continue; }
+    out.push({
+      worktree: st.worktree || f.replace(/\.json$/, ''),
+      pid: st.pid ?? null,
+      apiPort: st.apiPort ?? null,
+      webPort: st.webPort ?? null,
+      dir: st.dir || null,
+      startedAt: st.startedAt || null,
+      running: pidAlive(Number(st.pid)),
+    });
+  }
+  out.sort((a, b) => (a.webPort || 0) - (b.webPort || 0));
+  return out;
+}
+
+app.get('/api/instances', async (_req, res) => {
+  try { res.json({ instances: await listInstances() }); }
+  catch (err) { res.status(500).json({ error: (err.message || String(err)).trim() }); }
+});
+
+app.post('/api/instances/:worktree/start', async (req, res) => {
+  const worktree = String(req.params.worktree || '');
+  if (!WORKTREE_RE.test(worktree)) return res.status(400).json({ error: 'invalid worktree' });
+  const r = await runDevRemote('start', worktree);
+  const instance = (await listInstances()).find((i) => i.worktree === worktree) || null;
+  res.status(r.ok ? 200 : 500).json({ ...r, instance });
+});
+
+app.post('/api/instances/:worktree/stop', async (req, res) => {
+  const worktree = String(req.params.worktree || '');
+  if (!WORKTREE_RE.test(worktree)) return res.status(400).json({ error: 'invalid worktree' });
+  const r = await runDevRemote('stop', worktree);
+  res.status(r.ok ? 200 : 500).json(r);
+});
+
+app.get('/api/instances/:worktree/status', async (req, res) => {
+  const worktree = String(req.params.worktree || '');
+  if (!WORKTREE_RE.test(worktree)) return res.status(400).json({ error: 'invalid worktree' });
+  res.json(await runDevRemote('status', worktree));
+});
+
 // ── Applications + their state (single store DB) ──────────────────────────────
 // Everything lives in one MariaDB database. `applications` is the top-level
 // entity; epics/business-rules/notes/snapshots/agent-info are scoped by
