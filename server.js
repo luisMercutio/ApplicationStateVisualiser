@@ -1556,6 +1556,38 @@ app.post('/api/session-finished', (req, res) => {
   res.json({ ok: true });
 });
 
+// Close a terminal session on the agent's say-so. The Terminal page's Exit button
+// types a prompt asking the Claude agent to verify the change is merged onto main and
+// test and the worktree is cleaned up; when satisfied, the agent POSTs its merge/cleanup
+// status here and we kill the tmux session (the attached PTY then exits, so the panel's
+// WebSocket emits its own `exit` frame). The status is logged, not stored. We broadcast
+// `session-exited` so any badge for the session clears immediately (like session-finished,
+// deliberately NOT pushed to the activity ring buffer).
+app.post('/api/terminal/sessions/exit', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const session = String(b.session || '').trim();
+    if (!SESSION_RE.test(session)) {
+      return res.status(400).json({ error: `invalid session name: ${session}` });
+    }
+    console.log(`[terminal] exit "${session}" — mergedMain=${!!b.mergedMain} mergedTest=${!!b.mergedTest} ` +
+      `worktreeCleaned=${!!b.worktreeCleaned}${b.notes ? ` notes=${JSON.stringify(String(b.notes))}` : ''}`);
+    // `=name` forces an exact match so we can't kill a similarly-named session.
+    await wsl(['tmux', 'kill-session', '-t', `=${session}`]).catch(e => {
+      // Already gone (no such session / no server) is success for our purposes.
+      if (/can't find|no such|no server/i.test(`${e.stderr || ''}${e.message || ''}`)) return;
+      throw e;
+    });
+    const frame = JSON.stringify({ type: 'session-exited', session });
+    for (const ws of activityClients) {
+      if (ws.readyState === ws.OPEN) ws.send(frame);
+    }
+    res.json({ ok: true, session });
+  } catch (err) {
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
 function scheduleNtfyReconnect() {
   if (ntfyReconnectTimer) return; // already pending — don't stack reconnects
   ntfyReconnectTimer = setTimeout(() => {
