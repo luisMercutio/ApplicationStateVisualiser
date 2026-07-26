@@ -79,12 +79,6 @@ import { filter } from 'rxjs';
         <span class="active-app desktop-only" matTooltip="Active application">{{ app.name }}</span>
       }
 
-      <!-- Claude (Methodology editor) — desktop icon -->
-      <button mat-icon-button class="desktop-only" matTooltip="Claude" [class.active-gear]="page() === 'settings'"
-              (click)="navigate.emit('settings')">
-        <mat-icon>smart_toy</mat-icon>
-      </button>
-
       <!-- Applications — desktop icon (opens the manager dialog) -->
       <button mat-icon-button class="desktop-only" matTooltip="Applications" (click)="openApplicationsManager()">
         <mat-icon>settings</mat-icon>
@@ -126,9 +120,6 @@ import { filter } from 'rxjs';
           }
           <mat-divider></mat-divider>
         }
-        <button mat-menu-item [class.active-item]="page() === 'settings'" (click)="navigate.emit('settings')">
-          <mat-icon>smart_toy</mat-icon><span>Claude</span>
-        </button>
         <button mat-menu-item (click)="openApplicationsManager()">
           <mat-icon>settings</mat-icon><span>Applications</span>
         </button>
@@ -149,7 +140,6 @@ import { filter } from 'rxjs';
     .layout-select ::ng-deep .mat-mdc-notched-outline > * { border-color: rgba(255,255,255,0.5) !important; }
     .divider { width: 1px; height: 24px; background: rgba(255,255,255,0.3); margin: 0 4px; }
     .add-btn { color: white; border-color: rgba(255,255,255,0.6); }
-    .active-gear { color: #ffeb3b; }
     .active-app { font-size: 13px; font-weight: 500; white-space: nowrap; margin: 0 6px;
                   max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
 
