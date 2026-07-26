@@ -4,6 +4,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { forkJoin } from 'rxjs';
 import { FileService } from '../../../services/file.service';
+import { WorkspaceService } from '../../../services/workspace.service';
 import { GitCommit, GitWorktree } from '../../../models/git.model';
 
 // Read-only view over the repo's own git: an overview of the worktrees (each an
@@ -34,23 +35,34 @@ import { GitCommit, GitWorktree } from '../../../models/git.model';
         <div class="wt-grid">
           @for (wt of worktrees(); track wt.path) {
             @let state = stateOf(wt);
-            <button class="wt-card" [attr.data-state]="state"
-                    [class.selected]="selectedRef() === refFor(wt)" (click)="selectWorktree(wt)">
-              <div class="wt-top">
-                <mat-icon class="wt-icon">{{ wt.main ? 'home' : (wt.detached ? 'link_off' : 'account_tree') }}</mat-icon>
-                <span class="wt-branch">{{ wt.branch ?? (wt.detached ? 'detached HEAD' : '—') }}</span>
-              </div>
-              <div class="wt-badges">
-                @if (wt.main) { <span class="badge main">main tree</span> }
-                @if (wt.detached) { <span class="badge det">detached</span> }
-                @if (wt.locked) { <span class="badge lock">locked</span> }
-                @if (state === 'merged-main') { <span class="badge m-main">merged → main</span> }
-                @if (state === 'merged-test') { <span class="badge m-test">merged → test</span> }
-                @if (state === 'stale') { <span class="badge stale" [matTooltip]="staleTip(wt)">stale</span> }
-              </div>
-              <div class="wt-sha mono">{{ (wt.head ?? '').slice(0, 10) || '—' }}</div>
-              <div class="wt-path mono" [matTooltip]="wt.path">{{ shortPath(wt.path) }}</div>
-            </button>
+            <div class="wt-cell">
+              <button class="wt-card" [attr.data-state]="state"
+                      [class.selected]="selectedRef() === refFor(wt)" (click)="selectWorktree(wt)">
+                <div class="wt-top">
+                  <mat-icon class="wt-icon">{{ wt.main ? 'home' : (wt.detached ? 'link_off' : 'account_tree') }}</mat-icon>
+                  <span class="wt-branch">{{ wt.branch ?? (wt.detached ? 'detached HEAD' : '—') }}</span>
+                </div>
+                <div class="wt-badges">
+                  @if (wt.main) { <span class="badge main">main tree</span> }
+                  @if (wt.detached) { <span class="badge det">detached</span> }
+                  @if (wt.locked) { <span class="badge lock">locked</span> }
+                  @if (state === 'merged-main') { <span class="badge m-main">merged → main</span> }
+                  @if (state === 'merged-test') { <span class="badge m-test">merged → test</span> }
+                  @if (state === 'stale') { <span class="badge stale" [matTooltip]="staleTip(wt)">stale</span> }
+                </div>
+                <div class="wt-sha mono">{{ (wt.head ?? '').slice(0, 10) || '—' }}</div>
+                <div class="wt-path mono" [matTooltip]="wt.path">{{ shortPath(wt.path) }}</div>
+              </button>
+              <!-- Open a live tmux terminal session rooted in this worktree, named after
+                   it, then jump to the Terminal page attached to it. The fresh session is
+                   seeded with a claude command that spins up its own worktree. -->
+              <button mat-button class="wt-open" (click)="openSession(wt)"
+                      [disabled]="opening() === wt.path"
+                      [matTooltip]="'Open a terminal session named ' + sessionNameFor(wt) + ' in this worktree and launch claude to create/work in it'">
+                <mat-icon>terminal</mat-icon>
+                <span>{{ opening() === wt.path ? 'Opening…' : 'Open session' }}</span>
+              </button>
+            </div>
           }
         </div>
       }
@@ -117,8 +129,12 @@ import { GitCommit, GitWorktree } from '../../../models/git.model';
     .clear mat-icon { font-size: 16px; width: 16px; height: 16px; margin-right: 2px; }
 
     .wt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px; padding: 4px 12px 8px; }
+    .wt-cell { display: flex; flex-direction: column; gap: 4px; }
     .wt-card { text-align: left; background: white; border: 1px solid #dcdfe4; border-radius: 8px; padding: 10px;
                cursor: pointer; font: inherit; box-shadow: 0 1px 3px rgba(0,0,0,0.06); transition: border-color .12s, box-shadow .12s; }
+    .wt-open { align-self: stretch; font-size: 12px; min-height: 30px; color: #5c6bc0; }
+    .wt-open mat-icon { font-size: 16px; width: 16px; height: 16px; margin-right: 4px; }
+    .wt-open[disabled] { color: #b0bec5; }
     .wt-card:hover { border-color: #9fa8da; }
     .wt-card.selected { border-color: #5c6bc0; box-shadow: 0 0 0 1px #5c6bc0; }
     .wt-top { display: flex; align-items: center; gap: 6px; }
@@ -164,6 +180,7 @@ import { GitCommit, GitWorktree } from '../../../models/git.model';
 })
 export class GitHistoryComponent implements OnInit {
   private file = inject(FileService);
+  private workspace = inject(WorkspaceService);
 
   worktrees = signal<GitWorktree[]>([]);
   commits = signal<GitCommit[]>([]);
@@ -171,6 +188,7 @@ export class GitHistoryComponent implements OnInit {
   selectedLabel = signal<string>('current branch');
   loading = signal<boolean>(false);
   error = signal<string | null>(null);
+  opening = signal<string>('');           // path of the worktree whose session is opening
 
   ngOnInit(): void { this.refresh(); }
 
@@ -229,6 +247,29 @@ export class GitHistoryComponent implements OnInit {
     this.selectedRef.set('');
     this.selectedLabel.set('current branch');
     this.loadLog();
+  }
+
+  // The tmux session name a worktree's "Open session" action will use — its checked-out
+  // branch, or (when detached) its directory name — tmux-safe (mirrors the server's
+  // worktreeSessionName). Shown in the tooltip.
+  sessionNameFor(wt: GitWorktree): string {
+    const raw = wt.branch ?? ((wt.path || '').split(/[\\/]/).filter(Boolean).pop() || '');
+    return raw.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-._]+/, '').slice(0, 60).replace(/[-._]+$/g, '');
+  }
+
+  // Ask the server to open (or reuse) a shell session rooted in this worktree, then hand
+  // off to the Terminal page attached to it. One in-flight open at a time (opening()).
+  openSession(wt: GitWorktree): void {
+    if (this.opening()) return;
+    this.opening.set(wt.path);
+    this.file.openWorktreeSession(wt.path).subscribe({
+      next: ({ session }) => {
+        this.opening.set('');
+        this.error.set(null);
+        this.workspace.openTerminal(session);
+      },
+      error: err => { this.opening.set(''); this.error.set(errMsg(err)); },
+    });
   }
 
   isHead(ref: string): boolean { return ref.includes('HEAD'); }

@@ -152,6 +152,18 @@ function toWslPath(winPath) {
   return `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, '/')}`;
 }
 
+// Canonicalise a path that may already be in EITHER notation — a Windows drive path
+// (C:\… or C:/…) or a WSL mount path (/mnt/c/…) — to the /mnt/… form, WITHOUT the
+// path.resolve() that toWslPath runs (resolve would mangle an already-/mnt/… string on
+// Windows). Used to compare/derive worktree paths whose notation git isn't consistent
+// about, and to feed a working directory to tmux inside WSL.
+function wslPathLoose(p) {
+  const s = String(p || '').trim().replace(/\\/g, '/').replace(/\/+$/, '');
+  const m = /^([A-Za-z]):\/?(.*)$/.exec(s);
+  if (m) return `/mnt/${m[1].toLowerCase()}/${m[2]}`;
+  return s;
+}
+
 // Resolve the MAIN repository working tree, even when this server was launched
 // from inside a linked git worktree (e.g. .claude/worktrees/test). A linked
 // worktree's `.git` is a FILE ("gitdir: <root>/.git/worktrees/<name>"), not a
@@ -825,6 +837,89 @@ app.get('/api/git/worktrees', async (_req, res) => {
       }
     }));
     res.json({ worktrees });
+  } catch (err) {
+    res.status(500).json({ error: (err.stderr || err.message || String(err)).trim() });
+  }
+});
+
+// Sanitise a worktree's identifier — its checked-out branch, or (when detached) its
+// directory name — into a tmux session name. Unlike brSlug (which lowercases for BR
+// slugs), this keeps the case so the session reads like the branch it belongs to
+// (e.g. `openSessionFromGit`); it only swaps characters tmux/SESSION_RE reject, which
+// also folds the `/` in branch names like `feature/x` to `-`.
+function worktreeSessionName(raw) {
+  const name = String(raw || '')
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^[-._]+/, '')
+    .slice(0, 60)
+    .replace(/[-._]+$/g, '');
+  if (!name) throw new Error('cannot derive a session name from the worktree');
+  return name;
+}
+
+// Open (or reuse) a plain terminal tmux session rooted in a given worktree, so the Git
+// page can drop the user into a shell at that checkout — the same live-terminal flow the
+// Terminal page uses, but named after (and `cd`-ed into) the worktree. The requested path
+// is resolved against the LIVE worktree list rather than trusted from the client, so the
+// `-c` working directory can only ever be a real worktree.
+app.post('/api/git/worktrees/session', async (req, res) => {
+  try {
+    const wanted = String(req.body?.path || '').trim();
+    if (!wanted) return res.status(400).json({ error: 'path is required' });
+
+    // Resolve worktree ops against the MAIN repo root (not __dirname) so this works even
+    // when the server was launched from inside a linked worktree, whose `.git` is a file
+    // git-in-WSL can't dereference. The notation git reports paths in may then differ from
+    // what the Git page shows, but wslPathLoose canonicalises both sides so it doesn't matter.
+    const repoWsl = toWslPath(await mainRepoRoot());
+    const { stdout } = await wsl(['git', '-C', repoWsl, 'worktree', 'list', '--porcelain']);
+    // Parse each worktree's path + branch from the porcelain so we can name the session
+    // after its checked-out branch.
+    const entries = [];
+    let cur = null;
+    for (const line of stdout.split(/\r?\n/)) {
+      if (line.startsWith('worktree ')) { cur = { path: line.slice('worktree '.length).trim(), branch: null }; entries.push(cur); }
+      else if (!cur) continue;
+      else if (line.startsWith('branch ')) cur.branch = line.slice('branch '.length).replace(/^refs\/heads\//, '');
+    }
+    // git reports a worktree as a Windows path (C:\…) or a WSL path (/mnt/c/…) depending
+    // on how it was invoked, and the Git page could hand either form back. Compare on a
+    // canonical /mnt/… form so the match is independent of the notation.
+    const wantedWsl = wslPathLoose(wanted);
+    const match = entries.find(e => wslPathLoose(e.path) === wantedWsl);
+    if (!match) return res.status(404).json({ error: `no worktree at ${wanted}` });
+
+    // Name the session after the checked-out branch; fall back to the directory name for
+    // a detached HEAD (no branch).
+    const rawName = match.branch || (match.path.split(/[\\/]/).filter(Boolean).pop() || '');
+    const session = worktreeSessionName(rawName);
+    if (!SESSION_RE.test(session)) return res.status(400).json({ error: `invalid session name: ${session}` });
+
+    // Idempotent: if a session with this name is already live, hand it back so
+    // re-opening the same worktree attaches to the existing shell instead of erroring.
+    if (await tmuxHasSession(session)) {
+      return res.status(200).json({ session, worktree: match, reused: true });
+    }
+
+    // Detached so the HTTP call returns immediately; the Terminal panel then attaches
+    // over the WebSocket bridge (`new-session -A` finds this one). `-c <worktree>` roots
+    // the shell at the checkout — the bridge's own attach never passes a working dir.
+    // tmux runs inside WSL, so the working dir is the canonical /mnt/… form.
+    await wsl(['tmux', 'new-session', '-d', '-s', session, '-c', wantedWsl]);
+
+    // Seed the fresh shell with a standard startup command, as if the user typed it:
+    // hand the session over to a permission-skipping claude that spins up its own
+    // worktree named after this session. Only on first creation — the reuse path above
+    // returned early, so re-opening never re-fires this. The prompt is SINGLE-quoted so
+    // (a) it survives wsl.exe arg marshalling untouched (Node only mangles embedded
+    // double-quotes/backslashes) and (b) bash hands claude the whole instruction as one
+    // positional arg, mirroring the BR-submit flow. `session` matches SESSION_RE, so it
+    // can carry no quote that could break out of the single-quoted string.
+    const startupCmd =
+      `claude --dangerously-skip-permissions 'create a git worktree called ${session} from main and use this for your work'`;
+    await wsl(['tmux', 'send-keys', '-t', `=${session}`, startupCmd, 'Enter']);
+
+    res.status(201).json({ session, worktree: match, startupCmd });
   } catch (err) {
     res.status(500).json({ error: (err.stderr || err.message || String(err)).trim() });
   }
