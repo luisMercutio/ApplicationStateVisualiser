@@ -136,6 +136,14 @@ export class FileService {
       .pipe(map(r => r.worktrees));
   }
 
+  // Open (or reuse) a plain tmux terminal session rooted in the given worktree, named
+  // after the worktree directory. Returns the session name so the caller can attach the
+  // Terminal view to it. `reused` is true when a session with that name was already live.
+  openWorktreeSession(path: string): Observable<{ session: string; worktree: string; reused?: boolean }> {
+    return this.http.post<{ session: string; worktree: string; reused?: boolean }>(
+      `${API_BASE}/api/git/worktrees/session`, { path });
+  }
+
   // ref: a branch name or sha to scope the log to one worktree (omit for HEAD).
   getGitLog(ref?: string, limit = 100): Observable<GitCommit[]> {
     let params = new HttpParams().set('limit', String(limit));

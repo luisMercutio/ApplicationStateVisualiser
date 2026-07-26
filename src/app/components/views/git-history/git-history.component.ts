@@ -4,6 +4,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { forkJoin } from 'rxjs';
 import { FileService } from '../../../services/file.service';
+import { WorkspaceService } from '../../../services/workspace.service';
 import { GitCommit, GitWorktree } from '../../../models/git.model';
 import { AppInstance } from '../../../models/instance.model';
 
@@ -102,6 +103,14 @@ import { AppInstance } from '../../../models/instance.model';
                     <mat-icon>play_circle</mat-icon> Start
                   </button>
                 }
+                <!-- Open a live tmux terminal session rooted in this worktree, named after it,
+                     then jump to the Terminal page attached to it. The fresh session is seeded
+                     with a claude command that spins up its own worktree. -->
+                <button mat-button class="run-act session" [disabled]="opening() === wt.path"
+                        (click)="openSession(wt)"
+                        [matTooltip]="'Open a terminal session named ' + sessionNameFor(wt) + ' in this worktree and launch claude to create/work in it'">
+                  <mat-icon>terminal</mat-icon> {{ opening() === wt.path ? 'Opening…' : 'Session' }}
+                </button>
               </div>
             </div>
           }
@@ -225,6 +234,8 @@ import { AppInstance } from '../../../models/instance.model';
     .run-act.start { color: #2e7d32; }
     .run-act.stop { color: #c62828; }
     .run-act.open { color: #5c6bc0; }
+    .run-act.session { color: #00897b; }
+    .run-act.session[disabled] { color: #b0bec5; }
 
     /* Lifecycle colour coding: merged→main (red), merged→test (yellow), stale (violet).
        A left accent bar + faint tint keeps the card readable while signalling state. */
@@ -257,6 +268,7 @@ import { AppInstance } from '../../../models/instance.model';
 })
 export class GitHistoryComponent implements OnInit, OnDestroy {
   private file = inject(FileService);
+  private workspace = inject(WorkspaceService);
 
   worktrees = signal<GitWorktree[]>([]);
   commits = signal<GitCommit[]>([]);
@@ -268,6 +280,7 @@ export class GitHistoryComponent implements OnInit, OnDestroy {
   notice = signal<string | null>(null);   // transient success message
   busy = signal<boolean>(false);          // a mutating action is in flight
   instBusy = signal<string | null>(null); // worktree name whose instance is starting/stopping
+  opening = signal<string>('');           // path of the worktree whose session is opening
 
   // Instances keyed by the dev-remote worktree token, so each card can find its own.
   private instanceByName = computed(() => new Map(this.instances().map(i => [i.worktree, i])));
@@ -468,6 +481,29 @@ export class GitHistoryComponent implements OnInit, OnDestroy {
     this.file.stopInstance(name).subscribe({
       next: () => { this.instBusy.set(null); this.flash(`Stopped ${name}.`); this.reloadInstances(); },
       error: err => { this.instBusy.set(null); this.error.set(errMsg(err)); },
+    });
+  }
+
+  // The tmux session name a worktree's "Open session" action will use — its checked-out
+  // branch, or (when detached) its directory name — tmux-safe (mirrors the server's
+  // worktreeSessionName). Shown in the tooltip.
+  sessionNameFor(wt: GitWorktree): string {
+    const raw = wt.branch ?? ((wt.path || '').split(/[\\/]/).filter(Boolean).pop() || '');
+    return raw.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-._]+/, '').slice(0, 60).replace(/[-._]+$/g, '');
+  }
+
+  // Ask the server to open (or reuse) a shell session rooted in this worktree, then hand
+  // off to the Terminal page attached to it. One in-flight open at a time (opening()).
+  openSession(wt: GitWorktree): void {
+    if (this.opening()) return;
+    this.opening.set(wt.path);
+    this.file.openWorktreeSession(wt.path).subscribe({
+      next: ({ session }) => {
+        this.opening.set('');
+        this.error.set(null);
+        this.workspace.openTerminal(session);
+      },
+      error: err => { this.opening.set(''); this.error.set(errMsg(err)); },
     });
   }
 
