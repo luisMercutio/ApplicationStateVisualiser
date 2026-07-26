@@ -3,7 +3,7 @@ import { HttpClient, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
 import { Panel } from '../models/panel.model';
-import { ConversationMessage, RepoSession } from '../models/app-data.model';
+import { ClaudeSession, ConversationMessage, RepoSession } from '../models/app-data.model';
 import { GitCommit, GitWorktree } from '../models/git.model';
 
 // Derive the API host from the page's own host so the app works both on
@@ -49,6 +49,15 @@ export class FileService {
       `${API_BASE}/api/claude/sessions`, body);
   }
 
+  // All claude-* sessions: running ones (live in tmux) plus "dead" ones (a worktree
+  // or an archived transcript exists but no live tmux session). Running state and
+  // hasTranscript are derived server-side.
+  getClaudeSessions(): Observable<ClaudeSession[]> {
+    return this.http.get<{ sessions: ClaudeSession[] }>(
+      `${API_BASE}/api/claude/sessions`, { headers: { 'Cache-Control': 'no-cache' } })
+      .pipe(map(r => r.sessions));
+  }
+
   // Reopen a dead session: resume the prior conversation when it can be restored,
   // otherwise start fresh (seeded with the rule when provided). `mode` reports what
   // actually happened (resumed | rehydrated | fresh-seeded | fresh | already-running).
@@ -75,6 +84,14 @@ export class FileService {
   deleteClaudeSession(session: string): Observable<{ session: string; mode: string }> {
     return this.http.delete<{ session: string; mode: string }>(
       `${API_BASE}/api/claude/sessions/${encodeURIComponent(session)}`);
+  }
+
+  // The archived conversation for a session, reduced to prompt/answer turns only.
+  getClaudeConversation(session: string):
+    Observable<{ session: string; sessionId: string; messages: ConversationMessage[] }> {
+    return this.http.get<{ session: string; sessionId: string; messages: ConversationMessage[] }>(
+      `${API_BASE}/api/claude/sessions/${encodeURIComponent(session)}/conversation`,
+      { headers: { 'Cache-Control': 'no-cache' } });
   }
 
   // ── Repository sessions (every Claude session mirrored for this repo) ──
