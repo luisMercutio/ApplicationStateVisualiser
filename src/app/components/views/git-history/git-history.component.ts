@@ -1,10 +1,11 @@
-import { Component, OnInit, computed, inject, signal } from '@angular/core';
+import { Component, OnInit, OnDestroy, computed, inject, signal } from '@angular/core';
 import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { forkJoin } from 'rxjs';
 import { FileService } from '../../../services/file.service';
 import { GitCommit, GitWorktree } from '../../../models/git.model';
+import { AppInstance } from '../../../models/instance.model';
 
 // Read-only view over the repo's own git: an overview of the worktrees (each an
 // isolated checkout of a branch) plus the commit history. Selecting a worktree
@@ -55,11 +56,16 @@ import { GitCommit, GitWorktree } from '../../../models/git.model';
         <div class="wt-grid">
           @for (wt of worktrees(); track wt.path) {
             @let state = stateOf(wt);
-            <div class="wt-card" [attr.data-state]="state" [class.selected]="selectedRef() === refFor(wt)"
+            @let inst = instanceOf(wt);
+            @let live = !!inst?.running;
+            <div class="wt-card" [attr.data-state]="state" [class.running]="live"
+                 [class.selected]="selectedRef() === refFor(wt)"
                  role="button" tabindex="0" (click)="selectWorktree(wt)" (keydown.enter)="selectWorktree(wt)">
               <div class="wt-top">
                 <mat-icon class="wt-icon">{{ wt.main ? 'home' : (wt.detached ? 'link_off' : 'account_tree') }}</mat-icon>
                 <span class="wt-branch">{{ wt.branch ?? (wt.detached ? 'detached HEAD' : '—') }}</span>
+                <span class="run-dot" [class.on]="live"
+                      [matTooltip]="live ? 'Instance running on :' + inst!.webPort : (inst ? 'Instance stopped' : 'No instance')"></span>
                 @if (!isProtected(wt)) {
                   <button mat-icon-button class="wt-del" matTooltip="Remove worktree" [disabled]="busy()"
                           (click)="$event.stopPropagation(); removeWorktree(wt)">
@@ -71,12 +77,32 @@ import { GitCommit, GitWorktree } from '../../../models/git.model';
                 @if (wt.main) { <span class="badge main">main tree</span> }
                 @if (wt.detached) { <span class="badge det">detached</span> }
                 @if (wt.locked) { <span class="badge lock">locked</span> }
+                @if (live) { <span class="badge run">running :{{ inst!.webPort }}</span> }
                 @if (state === 'merged-main') { <span class="badge m-main">merged → main</span> }
                 @if (state === 'merged-test') { <span class="badge m-test">merged → test</span> }
                 @if (state === 'stale') { <span class="badge stale" [matTooltip]="staleTip(wt)">stale</span> }
               </div>
               <div class="wt-sha mono">{{ (wt.head ?? '').slice(0, 10) || '—' }}</div>
               <div class="wt-path mono" [matTooltip]="wt.path">{{ shortPath(wt.path) }}</div>
+
+              <!-- Run the worktree as its own app instance (next-free port pair via dev-remote) -->
+              <div class="wt-run" (click)="$event.stopPropagation()">
+                @if (live) {
+                  <a mat-button class="run-act open" [href]="webUrl(inst!)" target="_blank" rel="noopener"
+                     matTooltip="Open web :{{ inst!.webPort }} · api :{{ inst!.apiPort }}">
+                    <mat-icon>open_in_new</mat-icon> Open
+                  </a>
+                  <button mat-button class="run-act stop" [disabled]="instBusy() === nameOf(wt)"
+                          (click)="stopInstance(wt)">
+                    <mat-icon>stop_circle</mat-icon> Stop
+                  </button>
+                } @else {
+                  <button mat-button class="run-act start" [disabled]="instBusy() === nameOf(wt)"
+                          (click)="startInstance(wt)">
+                    <mat-icon>play_circle</mat-icon> Start
+                  </button>
+                }
+              </div>
             </div>
           }
         </div>
@@ -184,6 +210,21 @@ import { GitCommit, GitWorktree } from '../../../models/git.model';
     .badge.m-main { background: #ffebee; color: #c62828; }
     .badge.m-test { background: #fff8e1; color: #f9a825; }
     .badge.stale { background: #f3e5f5; color: #8e24aa; }
+    .badge.run { background: #e8f5e9; color: #2e7d32; }
+
+    /* Running-instance indicator: a green dot in the card header + a green accent
+       ring so a live worktree is obvious among the merged/stale colour coding. */
+    .run-dot { width: 8px; height: 8px; border-radius: 50%; background: #cfd8dc; flex-shrink: 0; margin-left: auto; }
+    .run-dot.on { background: #43a047; box-shadow: 0 0 0 3px rgba(67,160,71,0.18); }
+    .wt-top:has(.wt-del) .run-dot { margin-left: auto; }
+    .wt-card.running { box-shadow: 0 0 0 1px #a5d6a7, 0 1px 3px rgba(0,0,0,0.06); }
+
+    .wt-run { display: flex; align-items: center; gap: 4px; margin-top: 6px; }
+    .run-act { font-size: 12px; min-width: 0; line-height: 28px; padding: 0 8px; }
+    .run-act mat-icon { font-size: 16px; width: 16px; height: 16px; margin-right: 2px; }
+    .run-act.start { color: #2e7d32; }
+    .run-act.stop { color: #c62828; }
+    .run-act.open { color: #5c6bc0; }
 
     /* Lifecycle colour coding: merged→main (red), merged→test (yellow), stale (violet).
        A left accent bar + faint tint keeps the card readable while signalling state. */
@@ -214,17 +255,23 @@ import { GitCommit, GitWorktree } from '../../../models/git.model';
     .c-meta .hash { color: #78909c; } .c-meta .author { color: #607d8b; } .c-meta .sep { color: #cfd8dc; }
   `],
 })
-export class GitHistoryComponent implements OnInit {
+export class GitHistoryComponent implements OnInit, OnDestroy {
   private file = inject(FileService);
 
   worktrees = signal<GitWorktree[]>([]);
   commits = signal<GitCommit[]>([]);
+  instances = signal<AppInstance[]>([]);  // running (or once-running) worktree app instances
   selectedRef = signal<string>('');       // '' → current branch (repo HEAD)
   selectedLabel = signal<string>('current branch');
   loading = signal<boolean>(false);
   error = signal<string | null>(null);
   notice = signal<string | null>(null);   // transient success message
   busy = signal<boolean>(false);          // a mutating action is in flight
+  instBusy = signal<string | null>(null); // worktree name whose instance is starting/stopping
+
+  // Instances keyed by the dev-remote worktree token, so each card can find its own.
+  private instanceByName = computed(() => new Map(this.instances().map(i => [i.worktree, i])));
+  private poll?: ReturnType<typeof setInterval>;
 
   // Merge bar state: pick a source and target branch (both must be checked out).
   mergeFrom = signal<string>('');
@@ -246,21 +293,37 @@ export class GitHistoryComponent implements OnInit {
     return this.worktrees().some(w => w.branch === ref);
   });
 
-  ngOnInit(): void { this.refresh(); }
+  ngOnInit(): void {
+    this.refresh();
+    // Keep instance liveness/ports fresh while the page is open (a start settles
+    // asynchronously — the dev server takes a moment to bind its port).
+    this.poll = setInterval(() => this.reloadInstances(), 5000);
+  }
+
+  ngOnDestroy(): void { if (this.poll) clearInterval(this.poll); }
 
   refresh(): void {
     this.loading.set(true);
     forkJoin({
       worktrees: this.file.getGitWorktrees(),
       commits: this.file.getGitLog(this.selectedRef() || undefined),
+      instances: this.file.getInstances(),
     }).subscribe({
-      next: ({ worktrees, commits }) => {
+      next: ({ worktrees, commits, instances }) => {
         this.worktrees.set(worktrees);
         this.commits.set(commits);
+        this.instances.set(instances);
         this.error.set(null);
         this.loading.set(false);
       },
       error: err => { this.error.set(errMsg(err)); this.loading.set(false); },
+    });
+  }
+
+  private reloadInstances(): void {
+    this.file.getInstances().subscribe({
+      next: instances => this.instances.set(instances),
+      error: () => { /* keep the last good list; the toolbar refresh can retry */ },
     });
   }
 
@@ -363,6 +426,48 @@ export class GitHistoryComponent implements OnInit {
         this.refresh();
       },
       error: err => { this.busy.set(false); this.error.set(errMsg(err)); },
+    });
+  }
+
+  // ── Worktree instances (start/stop the worktree as its own running app) ──
+  // dev-remote's worktree token: the primary checkout is 'main', linked worktrees
+  // are their directory basename (they live under .claude/worktrees/<name>).
+  nameOf(wt: GitWorktree): string {
+    if (wt.main) return 'main';
+    return wt.path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || wt.path;
+  }
+
+  instanceOf(wt: GitWorktree): AppInstance | null {
+    return this.instanceByName().get(this.nameOf(wt)) ?? null;
+  }
+
+  // The URL to open a running instance: this page's host, the instance's web port.
+  webUrl(inst: AppInstance): string {
+    const host = typeof window !== 'undefined' && window.location?.hostname ? window.location.hostname : 'localhost';
+    const proto = typeof window !== 'undefined' && window.location?.protocol === 'https:' ? 'https' : 'http';
+    return `${proto}://${host}:${inst.webPort}`;
+  }
+
+  startInstance(wt: GitWorktree): void {
+    const name = this.nameOf(wt);
+    this.instBusy.set(name);
+    this.file.startInstance(name).subscribe({
+      next: res => {
+        this.instBusy.set(null);
+        if (res.instance) this.flash(`Started ${name} on web :${res.instance.webPort} (api :${res.instance.apiPort}).`);
+        else this.error.set((res.stdout || res.stderr || 'Start failed.').trim());
+        this.reloadInstances();
+      },
+      error: err => { this.instBusy.set(null); this.error.set(errMsg(err)); },
+    });
+  }
+
+  stopInstance(wt: GitWorktree): void {
+    const name = this.nameOf(wt);
+    this.instBusy.set(name);
+    this.file.stopInstance(name).subscribe({
+      next: () => { this.instBusy.set(null); this.flash(`Stopped ${name}.`); this.reloadInstances(); },
+      error: err => { this.instBusy.set(null); this.error.set(errMsg(err)); },
     });
   }
 
