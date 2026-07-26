@@ -58,6 +58,13 @@ type Status = 'connecting' | 'connected' | 'disconnected' | 'error';
         </button>
         <button mat-icon-button class="bar-btn" matTooltip="Reconnect"
                 (click)="reconnect()" [disabled]="!session()">
+          <mat-icon>cable</mat-icon>
+        </button>
+        <!-- Exit hands the decision to the Claude agent in the pane: it types a
+             verify-merge/cleanup prompt, and Claude closes the session (via the
+             backend) only once the work is landed — or reports what's missing. -->
+        <button mat-icon-button class="bar-btn exit-btn" matTooltip="Exit session — Claude verifies merge & cleanup first"
+                (click)="exitSession()" [disabled]="!canExit()">
           <mat-icon>power_settings_new</mat-icon>
         </button>
       </div>
@@ -86,6 +93,7 @@ type Status = 'connecting' | 'connected' | 'disconnected' | 'error';
     .spacer { flex: 1; }
     .bar-btn { width: 28px; height: 28px; line-height: 28px; color: #bbb; }
     .bar-btn mat-icon { font-size: 16px; width: 16px; height: 16px; }
+    .exit-btn:not([disabled]) { color: #ff6b6b; }
     .term-host { flex: 1; min-height: 0; overflow: hidden; padding: 2px 4px; }
     .term-host ::ng-deep .xterm { height: 100%; }
   `],
@@ -99,6 +107,11 @@ export class TerminalComponent implements AfterViewInit, OnDestroy {
   // How many of the sessions currently in the picker have an unseen finish —
   // drives the small badge on the picker button.
   unreadHere = computed(() => this.sessions().filter(s => this.sessionActivity.isUnread(s)).length);
+
+  // Only a Claude agent session can act on the exit-check prompt, so the Exit button
+  // is enabled only when a claude-* session is attached (mirrors the naming used by
+  // the Claude-session endpoints in file.service.ts / server.js).
+  canExit = computed(() => this.session().startsWith('claude-'));
 
   // When set (e.g. by embedding the component with a binding), attach to this
   // session on init instead of auto-selecting the default tmux session. When hosted
@@ -203,6 +216,33 @@ export class TerminalComponent implements AfterViewInit, OnDestroy {
     if (this.session()) this.connect(this.session());
   }
 
+  // Ask the Claude agent running in this pane to close the session — but only after
+  // it confirms the change is merged onto main and test and the worktree is cleaned
+  // up. We just type the prompt into the live PTY (same path as any keystroke); Claude
+  // does the checking and, when satisfied, POSTs /api/terminal/sessions/exit itself,
+  // which kills the tmux session. If something's missing it reports that and waits.
+  exitSession(): void {
+    const session = this.session();
+    if (!this.canExit() || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!window.confirm(
+      `Ask Claude to close "${session}"?\n\nClaude will first check that the change is merged onto ` +
+      `main and test and the worktree is cleaned up. If so it closes the session; otherwise it ` +
+      `tells you what's missing.`)) return;
+    this.ws.send(new TextEncoder().encode(this.exitPrompt(session) + '\r'));
+    this.statusText.set('Asked Claude to verify merge/cleanup before exit…');
+  }
+
+  // A single line (Claude's TUI submits on the first newline, so no embedded \n). The
+  // session name is baked in so Claude curls the exact session back to the backend.
+  private exitPrompt(session: string): string {
+    return `Before I close this terminal session: is this change merged onto main AND test, and is ` +
+      `the worktree cleaned up? If all three are done, close this session by running: curl -sS -X POST ` +
+      `http://localhost:3001/api/terminal/sessions/exit -H 'Content-Type: application/json' -d ` +
+      `'{"session":"${session}","mergedMain":true,"mergedTest":true,"worktreeCleaned":true}' — if ` +
+      `anything is missing, list exactly what's missing and do NOT exit unless I explicitly tell you ` +
+      `to exit anyway.`;
+  }
+
   private connect(session: string): void {
     if (!this.term) return;
     this.teardownSocket();
@@ -252,6 +292,8 @@ export class TerminalComponent implements AfterViewInit, OnDestroy {
       this.statusText.set(msg.message ?? 'Error');
     } else if (msg.type === 'exit') {
       this.statusText.set(`Session ended (code ${msg.code ?? 0})`);
+      // The tmux session is gone (e.g. an Exit-session close) — drop it from the picker.
+      this.refreshSessions(/* autoConnect */ false);
     }
   }
 
