@@ -182,5 +182,8 @@ export class SessionActivityService {
     // Exact, hook-driven finish signal — the only thing that flags a badge.
     // ntfy `message`/`backlog` frames on this socket belong to the Activity page.
     if (msg.type === 'session-finished' && msg.session) this.flag(msg.session);
+    // A session was closed via the Terminal Exit button — clear its badge at once
+    // rather than waiting for reconcileUnread() to notice it left the live list.
+    else if (msg.type === 'session-exited' && msg.session) this.markOpened(msg.session);
   }
 }
